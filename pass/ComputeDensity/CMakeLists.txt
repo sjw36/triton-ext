@@ -23,6 +23,7 @@ add_mlir_library(${PROJECT_NAME}
     ${PASS_TABLEGEN_OUTPUT}
 
     LINK_LIBS PUBLIC
+    triton
     TritonExtPassInfra
     MLIRPass
     MLIRArithDialect
