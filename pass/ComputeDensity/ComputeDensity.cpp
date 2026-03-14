@@ -604,4 +604,4 @@ struct ComputeDensityPass
 } // namespace
 
 // Include the MLIR pass plugin registry implementation
-#include "TritonExtPass.cpp"
+#include "ExportPass.cpp"

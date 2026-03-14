@@ -1,4 +1,4 @@
-triton_ext_pass_setup(ComputeDensityPass)
+triton_extension(ComputeDensityPass)
 
 # Add pass TableGen.
 set(PASS_TABLEGEN_OUTPUT "TritonExt${TRITON_EXT_CLASS}IncGen")
@@ -23,8 +23,8 @@ add_mlir_library(${PROJECT_NAME}
     ${PASS_TABLEGEN_OUTPUT}
 
     LINK_LIBS PUBLIC
-    triton
-    TritonExtPassInfra
+    TritonExtensionSupport
+    ${TRITON_LIB}
     MLIRPass
     MLIRArithDialect
     MLIRSCFDialect
