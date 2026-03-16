@@ -7,10 +7,7 @@ add_mlir_library(${PROJECT_NAME}
     SHARED
 
     LINK_LIBS PUBLIC
-    MLIRPass
-    MLIRDialect
-    LLVMSupport
-    MLIRSupport
+    ${TRITON_LIB}
     "$<$<PLATFORM_ID:Darwin>:-undefined dynamic_lookup>"
 )
 
