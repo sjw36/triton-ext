@@ -24,12 +24,20 @@ add_mlir_library(${PROJECT_NAME}
 
     LINK_LIBS PUBLIC
     TritonExtensionSupport
+    #MLIRPass
+    #MLIRArithDialect
+    #MLIRSCFDialect
+    #LLVMSupport
+    #MLIRSupport
+)
+
+target_link_libraries(${PROJECT_NAME}
+  PUBLIC
+    TritonExtensionSupport
+    -Wl,--no-as-needed
     ${TRITON_LIB}
-    MLIRPass
-    MLIRArithDialect
-    MLIRSCFDialect
-    LLVMSupport
-    MLIRSupport
+    -Wl,--as-needed
+    # ... MLIR libs ...
 )
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
