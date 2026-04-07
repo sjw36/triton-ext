@@ -55,7 +55,7 @@ void utlx::createRemoteShmemStore(TritonOpBuilder &self,
   if (operands.size() < 3)
     return;
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_gpu.remote_shmem_store", {},
+                  "ttg.remote_shmem_store", {},
                   {operands[0], operands[1], operands[2]});
 }
 
@@ -65,7 +65,7 @@ void utlx::createAsyncRemoteShmemStore(TritonOpBuilder &self,
   if (operands.size() < 4)
     return;
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_gpu.async_remote_shmem_store", {},
+                  "ttg.async_remote_shmem_store", {},
                   {operands[0], operands[1], operands[2], operands[3]});
 }
 
@@ -74,7 +74,7 @@ void utlx::createClock64(TritonOpBuilder &self,
                          std::vector<mlir::Value> &operands) {
   auto i64Ty = self.getBuilder().getI64Type();
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_gpu.clock64", {i64Ty}, {});
+                             "ttg.clock64", {i64Ty}, {});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -88,8 +88,7 @@ void utlx::createAsyncStore(TritonOpBuilder &self,
                             std::vector<mlir::Value> &operands) {
   if (operands.size() < 3)
     return;
-  createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_nvidia_gpu.async_store", {},
+  createRuntimeOp(self.getBuilder(), self.getLastLoc(), "ttng.async_store", {},
                   {operands[0], operands[1], operands[2]});
 }
 
@@ -111,7 +110,7 @@ void utlx::createFence(TritonOpBuilder &self,
   }
 
   auto scopeAttr = builder.getNamedAttr("scope", builder.getStringAttr(scope));
-  createRuntimeOp(builder, loc, "triton_nvidia_gpu.fence", {}, {}, {scopeAttr});
+  createRuntimeOp(builder, loc, "ttng.fence", {}, {}, {scopeAttr});
 }
 
 /// utlx_map_to_remote_buffer(src, ctaRank) -> memdesc
@@ -123,8 +122,8 @@ void utlx::createMapToRemoteBuffer(TritonOpBuilder &self,
   mlir::Value ctaRank = operands[2];
 
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_nvidia_gpu.map_to_remote_buffer",
-                             {src.getType()}, {src, ctaRank});
+                             "ttng.map_to_remote_buffer", {src.getType()},
+                             {src, ctaRank});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -134,7 +133,7 @@ void utlx::createClusterSize1D(TritonOpBuilder &self,
                                std::vector<mlir::Value> &operands) {
   auto i32Ty = self.getBuilder().getI32Type();
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_nvidia_gpu.cluster_size_1d", {i32Ty}, {});
+                             "ttng.cluster_size_1d", {i32Ty}, {});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -145,8 +144,7 @@ void utlx::createAsyncCLCTryCancel(TritonOpBuilder &self,
   if (operands.size() < 2)
     return;
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_nvidia_gpu.async_clc_try_cancel", {},
-                  {operands[0], operands[1]});
+                  "ttng.async_clc_try_cancel", {}, {operands[0], operands[1]});
 }
 
 /// utlx_clc_query_cancel(clcResAlloc) -> i32
@@ -156,8 +154,7 @@ void utlx::createCLCQueryCancel(TritonOpBuilder &self,
     return;
   auto i32Ty = self.getBuilder().getI32Type();
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_nvidia_gpu.clc_query_cancel", {i32Ty},
-                             {operands[1]});
+                             "ttng.clc_query_cancel", {i32Ty}, {operands[1]});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -179,9 +176,9 @@ void utlx::createVoteBallotSync(TritonOpBuilder &self,
     resultType = self.getBuilder().getI32Type();
   }
 
-  auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_nvidia_gpu.vote_ballot_sync", {resultType},
-                             {mask, pred});
+  auto *op =
+      createRuntimeOp(self.getBuilder(), self.getLastLoc(),
+                      "ttng.vote_ballot_sync", {resultType}, {mask, pred});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -205,7 +202,7 @@ void utlx::createAsyncTMAPrefetch(TritonOpBuilder &self,
   allOperands.push_back(pred);
 
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_nvidia_gpu.async_tma_prefetch", {}, allOperands);
+                  "ttng.async_tma_prefetch", {}, allOperands);
 }
 
 /// utlx_named_barrier_arrive(bar, numThreads)
@@ -214,8 +211,7 @@ void utlx::createNamedBarrierArrive(TritonOpBuilder &self,
   if (operands.size() < 2)
     return;
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_nvidia_gpu.named_barrier_arrive", {},
-                  {operands[0], operands[1]});
+                  "ttng.named_barrier_arrive", {}, {operands[0], operands[1]});
 }
 
 /// utlx_named_barrier_wait(bar, numThreads)
@@ -224,8 +220,7 @@ void utlx::createNamedBarrierWait(TritonOpBuilder &self,
   if (operands.size() < 2)
     return;
   createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                  "triton_nvidia_gpu.named_barrier_wait", {},
-                  {operands[0], operands[1]});
+                  "ttng.named_barrier_wait", {}, {operands[0], operands[1]});
 }
 
 // ---------------------------------------------------------------------------
@@ -239,8 +234,7 @@ void utlx::createReadBarrierPhase(TritonOpBuilder &self,
     return;
   auto i32Ty = self.getBuilder().getI32Type();
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "triton_amdgpu.read_barrier_phase", {i32Ty},
-                             {operands[1]});
+                             "amdg.read_barrier_phase", {i32Ty}, {operands[1]});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -558,9 +552,9 @@ void utlx::createRequireTensorMemoryScalesLayout(
 void utlx::createClusterCtaRank(TritonOpBuilder &self,
                                 std::vector<mlir::Value> &operands) {
   auto i32Ty = self.getBuilder().getI32Type();
-  // ClusterCTAIdOp is registered as "nvgpu.cluster_id"
+  // ClusterCTAIdOp is registered as "nvg.cluster_id"
   auto *op = createRuntimeOp(self.getBuilder(), self.getLastLoc(),
-                             "nvgpu.cluster_id", {i32Ty}, {});
+                             "nvg.cluster_id", {i32Ty}, {});
   if (op && op->getNumResults() > 0)
     operands[0] = op->getResult(0);
 }
@@ -578,7 +572,7 @@ void utlx::createAsyncLoad(TritonOpBuilder &self,
                            std::vector<mlir::Value> &operands) {
   if (operands.size() < 4)
     return;
-  // The op is "triton_gpu.async_copy_global_to_local"
+  // The op is "ttg.async_copy_global_to_local"
   // For now, use runtime op creation since the signature may vary
   mlir::Value src = operands[1];
   mlir::Value result = operands[2];
@@ -600,8 +594,7 @@ void utlx::createAsyncLoad(TritonOpBuilder &self,
     // For now, create as runtime op since bulk variant may differ
     llvm::SmallVector<mlir::Value> opOperands = {src, result};
     auto *op = createRuntimeOp(
-        self.getBuilder(), self.getLastLoc(),
-        "triton_gpu.async_copy_global_to_local",
+        self.getBuilder(), self.getLastLoc(), "ttg.async_copy_global_to_local",
         {self.getBuilder().getType<ttg::AsyncTokenType>()}, opOperands);
     if (op && op->getNumResults() > 0)
       operands[0] = op->getResult(0);
@@ -613,8 +606,7 @@ void utlx::createAsyncLoad(TritonOpBuilder &self,
     for (size_t i = 3; i < operands.size() - 1; ++i)
       opOperands.push_back(operands[i]);
     auto *op = createRuntimeOp(
-        self.getBuilder(), self.getLastLoc(),
-        "triton_gpu.async_copy_global_to_local",
+        self.getBuilder(), self.getLastLoc(), "ttg.async_copy_global_to_local",
         {self.getBuilder().getType<ttg::AsyncTokenType>()}, opOperands);
     if (op && op->getNumResults() > 0)
       operands[0] = op->getResult(0);
@@ -642,7 +634,7 @@ void utlx::createGlobalScratchAlloc(TritonOpBuilder &self,
       self.getBuilder().getI32IntegerAttr(static_cast<int32_t>(*alignmentVal));
 
   auto *op = createRuntimeOp(
-      self.getBuilder(), self.getLastLoc(), "triton_gpu.global_scratch_alloc",
+      self.getBuilder(), self.getLastLoc(), "ttg.global_scratch_alloc",
       {ptrType}, {},
       {self.getBuilder().getNamedAttr("nbytes", nbytesAttr),
        self.getBuilder().getNamedAttr("alignment", alignmentAttr)});
@@ -772,16 +764,15 @@ void utlx::createClcQuery(TritonOpBuilder &self,
   auto i32Ty = builder.getI32Type();
 
   // First query the cancel status
-  auto *queryOp =
-      createRuntimeOp(builder, loc, "triton_nvidia_gpu.clc_query_cancel",
-                      {i32Ty}, {operands[1]});
+  auto *queryOp = createRuntimeOp(builder, loc, "ttng.clc_query_cancel",
+                                  {i32Ty}, {operands[1]});
   if (!queryOp || queryOp->getNumResults() == 0)
     return;
 
   mlir::Value tileId = queryOp->getResult(0);
 
   // Get cluster CTA rank
-  auto *rankOp = createRuntimeOp(builder, loc, "nvgpu.cluster_id", {i32Ty}, {});
+  auto *rankOp = createRuntimeOp(builder, loc, "nvg.cluster_id", {i32Ty}, {});
   if (!rankOp || rankOp->getNumResults() == 0) {
     operands[0] = tileId;
     return;
