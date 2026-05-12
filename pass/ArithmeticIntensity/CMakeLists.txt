@@ -1,4 +1,4 @@
-triton_extension(ComputeDensityPass)
+triton_extension(ArithmeticIntensityPass)
 
 # Add pass TableGen.
 set(PASS_TABLEGEN_OUTPUT "TritonExt${TRITON_EXT_CLASS}IncGen")
@@ -15,7 +15,7 @@ add_compile_definitions(
 
 # Build the pass extension library (SHARED).
 add_mlir_library(${PROJECT_NAME}
-    ComputeDensity.cpp
+    ArithmeticIntensity.cpp
 
     SHARED
 
