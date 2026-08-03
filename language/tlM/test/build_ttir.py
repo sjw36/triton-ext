@@ -8,11 +8,12 @@ Stops at TTIR (the frontend's output) rather than running a full
 there is no GPU code-gen path for it. Building TTIR with a stub target needs no
 GPU, mirroring Triton's own `triton._filecheck` frontend tests.
 
+Requires the `triton-tlM` and `triton-mega` wheels to be installed
+(`make build install`); importing `tlM` pulls in `triton_mega`, which
+registers the dialect and the builder method.
+
 Usage:
-    TRITON_PLUGIN_PATHS=.../libmega.so \\
-    PYTHONPATH=.../triton-*/python:.../language/tlM/python \\
-    LD_LIBRARY_PATH=.../llvm-*/lib \\
-        python build_ttir.py <kernel>
+    python build_ttir.py <kernel>
 """
 
 import sys
@@ -23,13 +24,11 @@ from triton._C.libtriton import ir
 from triton.backends.compiler import GPUTarget
 from triton.compiler import ASTSource, make_backend
 
-import tlM  # noqa: F401  (registers triton.language.extra.tlM)
-import triton.language.extra.tlM as tlM
-
-# Load the `mega` dialect plugin (path from MEGA_PLUGIN / TRITON_PLUGIN_PATHS)
-# into the Python bindings: it provides the `mega` dialect and the
-# `create_mega_bulk_sync` builder method used by `tlM.bulk_sync`.
-tlM.register_plugin()
+# Importing `tlM` imports `triton_mega`, which registers the `mega` dialect
+# and the `create_mega_bulk_sync` builder method, then registers itself as
+# `triton.language.extra.tlM` — the same module object, so kernels below can
+# call it under either name.
+import tlM
 
 # A stub target lets us build TTIR via the frontend without a real GPU.
 STUB_TARGET = GPUTarget("cuda", 100, 32)

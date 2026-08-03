@@ -42,7 +42,8 @@ void MegaDialect::initialize() {
 namespace {
 void createBulkSyncBuilderOp(TritonOpBuilder &self,
                              std::vector<mlir::Value> &operands) {
-  // operands[1] = arrival_ptr, [2] = release_ptr, [3] = num_programs, [4] = sense
+  // operands[1] = arrival_ptr, [2] = release_ptr, [3] = num_programs, [4] =
+  // sense
   if (operands.size() < 5)
     return;
   self.create<mlir::triton::mega::BulkSyncOp>(operands[1], operands[2],

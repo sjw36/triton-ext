@@ -1,4 +1,4 @@
-// RUN: triton-opt --split-input-file %s -canonicalize | FileCheck %s
+// RUN: mega.py %s | %filecheck %s
 
 // This test checks that the `mega.bulk_sync` op is correctly parsed and printed
 // and that it is not canonicalized away (it carries side effects).

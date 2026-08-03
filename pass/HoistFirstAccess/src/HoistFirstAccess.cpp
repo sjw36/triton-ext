@@ -202,8 +202,8 @@ struct MegaHoistFirstAccessPass
       // Move the slice (producers first, load last) to just before the sync.
       for (Operation *op : slice)
         op->moveBefore(sync);
-      LLVM_DEBUG(llvm::dbgs()
-                 << "hoisted first-access load above " << kBulkSyncName << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "hoisted first-access load above "
+                              << kBulkSyncName << "\n");
     }
   }
 };

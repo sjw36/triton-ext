@@ -48,6 +48,9 @@ _PACKAGE_MAP: dict[str, str] = {
     "example": "triton_example",
     "triton-example": "triton_example",
     "utlx": "utlx_plugin",
+    "mega": "triton_mega",
+    "mega-bulk-sync": "triton_mega_bulk_sync",
+    "mega-hoist-first-access": "triton_mega_hoist_first_access",
 }
 
 

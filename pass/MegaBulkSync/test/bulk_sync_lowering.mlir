@@ -1,4 +1,4 @@
-// RUN: triton-opt --split-input-file %s -mega-bulk-sync-lowering | FileCheck %s
+// RUN: mega_bulk_sync.py %s | %filecheck %s
 
 // CHECK-LABEL: @grid_barrier
 // CHECK-SAME:  (%[[ARR:.*]]: !tt.ptr<i32>, %[[REL:.*]]: !tt.ptr<i32>, %[[NP:.*]]: i32, %[[SENSE:.*]]: i32)

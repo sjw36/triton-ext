@@ -20,7 +20,7 @@ class Mega_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [])> {
 }
 
-def Mega_BulkSyncOp : Mega_Op<"bulk_sync", []> {
+def Mega_BulkSyncOp : Mega_Op<"bulk_sync", [DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
     let summary = "Grid-wide barrier across cooperating programs.";
     let description = [{
         The `mega.bulk_sync` operation implements a grid-wide ("bulk") barrier

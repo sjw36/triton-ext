@@ -36,20 +36,17 @@ out-of-tree extensions use).
 
 Requirements
 ------------
-Both plugin libraries must be loadable (this file discovers them under
-``<repo>/build*/lib``):
-  * ``libmega.so``            -- the ``mega`` dialect + its builder method
-  * ``libmega_bulk_sync.so``  -- the ``mega-bulk-sync-lowering`` pass
+Three extensions must be installed as wheels (``make build && make install``
+at the repo root, or per extension):
+  * ``triton-tlM``               -- the ``tlM.bulk_sync`` builtin
+  * ``triton-mega``              -- the ``mega`` dialect + its builder method
+  * ``triton-mega-bulk-sync``    -- the ``mega-bulk-sync-lowering`` pass
 
 Three things have to be registered before the kernel compiles: the `mega`
 dialect, the ``create_mega_bulk_sync`` builder method behind
 ``tlM.bulk_sync``, and the ``add_mega_bulk_sync`` pass wrapper used by the
-stages hook below. How that happens depends on the Triton build, so step 0
-does both: it sets ``TRITON_PLUGIN_PATHS`` *before* importing triton (older
-builds, including the revision pinned in ``ci/triton-hash.txt``, enumerate it
-while ``libtriton`` is imported) and then calls the explicit
-``extend_with``-style APIs when the bindings provide them (newer builds load
-nothing on their own).
+stages hook below. Importing the packages does all three -- each wheel's
+``__init__`` hands its bundled ``.so`` to Triton -- so step 0 is just imports.
 
 Triton itself must be built with ``TRITON_EXT_ENABLED=1``; otherwise
 ``libtriton.so`` hides its MLIR symbols, the plugins bind to a second copy of
@@ -65,58 +62,25 @@ Run it:
 from __future__ import annotations
 
 import hashlib
-import os
 import pathlib
-import sys
+
+import torch
+import triton
+import triton.language as tl
+from triton import knobs
+from triton._C.libtriton import ir, passes
 
 # --------------------------------------------------------------------------- #
-# 0. Locate the plugin libraries and register them, BEFORE importing triton:
-#    older builds enumerate TRITON_PLUGIN_PATHS as `libtriton` is imported.
+# 0. Register the extensions by importing them. Each wheel's `__init__` hands
+#    its bundled `.so` to Triton, so this is the whole setup:
+#      * `tlM`                   -> the builtin; also imports `triton_mega`,
+#                                   giving the `mega` dialect and the
+#                                   `create_mega_bulk_sync` builder method
+#      * `triton_mega_bulk_sync` -> `passes.plugin.add_mega_bulk_sync`, used
+#                                   by the stages hook below
 # --------------------------------------------------------------------------- #
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
-_TLM_PYTHON_DIR = pathlib.Path(__file__).resolve().parents[1] / "python"
-
-
-def _find_lib(lib_name: str, env_var: str) -> pathlib.Path:
-    if env := os.environ.get(env_var):
-        p = pathlib.Path(env)
-        if p.exists():
-            return p
-    for build_dir in ("build", "build-release", "build-debug"):
-        cand = _REPO_ROOT / build_dir / "lib" / lib_name
-        if cand.exists():
-            return cand
-    raise RuntimeError(
-        f"Could not find {lib_name}. Build the extensions first (see README) "
-        f"so they exist under <repo>/build/lib/, or point {env_var} at it.")
-
-
-_MEGA_LIB = _find_lib("libmega.so", "MEGA_PLUGIN")
-_BULK_SYNC_LIB = _find_lib("libmega_bulk_sync.so", "MEGA_BULK_SYNC_PLUGIN")
-_libs = [str(_MEGA_LIB), str(_BULK_SYNC_LIB)]
-_libs += [p for p in os.environ.get("TRITON_PLUGIN_PATHS", "").split(os.pathsep)
-          if p]
-os.environ["TRITON_PLUGIN_PATHS"] = os.pathsep.join(dict.fromkeys(_libs))
-
-import torch  # noqa: E402
-import triton  # noqa: E402
-import triton.language as tl  # noqa: E402
-from triton import knobs  # noqa: E402
-from triton._C.libtriton import ir, passes  # noqa: E402
-
-# Register the `tlM` language extension (`triton.language.extra.tlM`).
-if str(_TLM_PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(_TLM_PYTHON_DIR))
-import tlM  # noqa: E402,F401
-import triton.language.extra.tlM as tlM  # noqa: E402
-
-# `mega` dialect + the `create_mega_bulk_sync` TritonOpBuilder method. On a
-# Triton that auto-loaded the plugin above, this only validates the setup.
-tlM.register_plugin(str(_MEGA_LIB))
-# `mega-bulk-sync-lowering` -> `passes.plugin.add_mega_bulk_sync`; needed only
-# on builds that expose the explicit loader.
-if hasattr(passes.plugin, "extend_with"):
-    passes.plugin.extend_with(str(_BULK_SYNC_LIB))
+import tlM  # also registers it as triton.language.extra.tlM (same module)
+import triton_mega_bulk_sync  # noqa: F401  registers the lowering pass
 
 
 # --------------------------------------------------------------------------- #
@@ -157,11 +121,18 @@ knobs.runtime.add_stages_inspection_hook = _bulk_sync_stages_hook
 # --------------------------------------------------------------------------- #
 @triton.jit
 def persistent_gemm(
-    lhs_ptr, rhs_ptr, out_ptr,  # out[Mo, No] = lhs[Mo, Ko] @ rhs[Ko, No]
-    Mo, No, Ko,  #
-    stride_lm, stride_lk,  # lhs strides (row, col)
-    stride_rk, stride_rn,  # rhs strides (row, col)
-    stride_om, stride_on,  # out strides (row, col)
+    lhs_ptr,
+    rhs_ptr,
+    out_ptr,  # out[Mo, No] = lhs[Mo, Ko] @ rhs[Ko, No]
+    Mo,
+    No,
+    Ko,  #
+    stride_lm,
+    stride_lk,  # lhs strides (row, col)
+    stride_rk,
+    stride_rn,  # rhs strides (row, col)
+    stride_om,
+    stride_on,  # out strides (row, col)
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -204,14 +175,27 @@ def persistent_gemm(
 
 @triton.jit
 def chained_matmul_kernel(
-    a_ptr, b_ptr, c_ptr, p_ptr, d_ptr,  # data
-    arrival_ptr, release_ptr,  # grid-barrier scratch (int32, zero-initialized)
-    M, N, K, L,  # A:MxK  B:KxN  ->  P:MxN ;  C:NxL  ->  D:MxL
-    stride_am, stride_ak,  #
-    stride_bk, stride_bn,  #
-    stride_cn, stride_cl,  #
-    stride_pm, stride_pn,  #
-    stride_dm, stride_dl,  #
+    a_ptr,
+    b_ptr,
+    c_ptr,
+    p_ptr,
+    d_ptr,  # data
+    arrival_ptr,
+    release_ptr,  # grid-barrier scratch (int32, zero-initialized)
+    M,
+    N,
+    K,
+    L,  # A:MxK  B:KxN  ->  P:MxN ;  C:NxL  ->  D:MxL
+    stride_am,
+    stride_ak,  #
+    stride_bk,
+    stride_bn,  #
+    stride_cn,
+    stride_cl,  #
+    stride_pm,
+    stride_pn,  #
+    stride_dm,
+    stride_dl,  #
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -219,12 +203,21 @@ def chained_matmul_kernel(
 ):
     # ----- GEMM 1: P = A @ B  (reduce over K) -----
     persistent_gemm(
-        a_ptr, b_ptr, p_ptr,
-        M, N, K,
-        stride_am, stride_ak,
-        stride_bk, stride_bn,
-        stride_pm, stride_pn,
-        BLOCK_M, BLOCK_N, BLOCK_K,
+        a_ptr,
+        b_ptr,
+        p_ptr,
+        M,
+        N,
+        K,
+        stride_am,
+        stride_ak,
+        stride_bk,
+        stride_bn,
+        stride_pm,
+        stride_pn,
+        BLOCK_M,
+        BLOCK_N,
+        BLOCK_K,
     )
 
     # ----- grid-wide barrier: make all of P globally visible -----
@@ -236,19 +229,30 @@ def chained_matmul_kernel(
     # Reuse persistent_gemm with lhs=P, rhs=C, out=D: the output is M x L and the
     # contraction dim is N, so BLOCK_N here plays the "BLOCK_K" role.
     persistent_gemm(
-        p_ptr, c_ptr, d_ptr,
-        M, L, N,
-        stride_pm, stride_pn,
-        stride_cn, stride_cl,
-        stride_dm, stride_dl,
-        BLOCK_M, BLOCK_L, BLOCK_N,
+        p_ptr,
+        c_ptr,
+        d_ptr,
+        M,
+        L,
+        N,
+        stride_pm,
+        stride_pn,
+        stride_cn,
+        stride_cl,
+        stride_dm,
+        stride_dl,
+        BLOCK_M,
+        BLOCK_L,
+        BLOCK_N,
     )
 
 
 # --------------------------------------------------------------------------- #
 # 3. Host wrapper.
 # --------------------------------------------------------------------------- #
-def chained_matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
+def chained_matmul(a: torch.Tensor,
+                   b: torch.Tensor,
+                   c: torch.Tensor,
                    num_sms: int | None = None) -> torch.Tensor:
     """Return ``(a @ b) @ c`` computed in a single grid-synchronized kernel."""
     M, K = a.shape
@@ -275,15 +279,31 @@ def chained_matmul(a: torch.Tensor, b: torch.Tensor, c: torch.Tensor,
 
     grid = (num_sms, )
     chained_matmul_kernel[grid](
-        a, b, c, p, d,
-        arrival, release,
-        M, N, K, L,
-        a.stride(0), a.stride(1),
-        b.stride(0), b.stride(1),
-        c.stride(0), c.stride(1),
-        p.stride(0), p.stride(1),
-        d.stride(0), d.stride(1),
-        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K, BLOCK_L=BLOCK_L,
+        a,
+        b,
+        c,
+        p,
+        d,
+        arrival,
+        release,
+        M,
+        N,
+        K,
+        L,
+        a.stride(0),
+        a.stride(1),
+        b.stride(0),
+        b.stride(1),
+        c.stride(0),
+        c.stride(1),
+        p.stride(0),
+        p.stride(1),
+        d.stride(0),
+        d.stride(1),
+        BLOCK_M=BLOCK_M,
+        BLOCK_N=BLOCK_N,
+        BLOCK_K=BLOCK_K,
+        BLOCK_L=BLOCK_L,
     )
     return d
 

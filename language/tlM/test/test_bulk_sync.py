@@ -5,68 +5,42 @@ through Triton's frontend: a ``@triton.jit`` kernel calls ``tlM.bulk_sync(...)``
 and we assert that the resulting TTIR contains the ``mega.bulk_sync`` op with
 the expected operands.
 
-Like the other plugin tests in this repo (see
-``pass/ArithmeticIntensity/test/test_arithmetic_intensity.py``), each test
-spawns a subprocess running ``build_ttir.py`` with a modified environment:
-``TRITON_PLUGIN_PATHS``, ``PYTHONPATH``, and ``LD_LIBRARY_PATH`` set. The
-subprocess matters: the `mega` dialect plugin is ABI-bound to the Triton pinned
-in ``ci/triton-hash.txt`` (the one under ``TRITON_INSTALL_DIR``), so the tests
-must not run against whatever ``triton`` happens to be importable in the
-ambient environment. ``PYTHONPATH`` also carries the pure-Python `tlM` package,
-which self-registers as ``triton.language.extra.tlM`` on import.
+Each test spawns a subprocess running ``build_ttir.py``. The subprocess needs
+no environment overrides: `tlM` and the `mega` dialect are installed wheels, so
+``import tlM`` loads the plugin and registers ``triton.language.extra.tlM``.
+It stays a subprocess because loading a plugin mutates Triton's global dialect
+and builder registries, which is worth keeping out of the pytest process.
 
-`libtriton` enumerates ``TRITON_PLUGIN_PATHS`` at import time, registering both
-the `mega` dialect and the ``mega_bulk_sync`` TritonOpBuilder method, so the
-subprocess needs no explicit plugin-loading call.
+The extensions must be installed first (``make build install``); the fixture
+skips rather than fails if they are not, matching ``testing/test_plugins.py``.
+There is no ABI-mismatch hazard to guard against here — a wheel is built
+against the Triton it is installed next to.
 """
 
 from __future__ import annotations
 
-import os
+import importlib.util
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-# language/tlM/test/ -> repo root is three levels up.
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-BUILD_DIR = Path(os.environ.get("BUILD_DIR", PROJECT_ROOT / "build"))
-TRITON_INSTALL_DIR = Path(os.environ["TRITON_INSTALL_DIR"])
-LLVM_INSTALL_DIR = Path(os.environ["LLVM_INSTALL_DIR"])
 BUILD_TTIR_SCRIPT = Path(__file__).resolve().parent / "build_ttir.py"
-# The pure-Python `tlM` language extension lives here.
-TLM_PYTHON_DIR = Path(__file__).resolve().parents[1] / "python"
-PLUGIN_LIB = BUILD_DIR / "lib" / "libmega.so"
 
 
 @pytest.fixture(scope="module")
 def build_ttir():
     """Return a callable mapping a kernel name to its TTIR text."""
 
-    if not PLUGIN_LIB.exists():
-        pytest.fail(f"plugin library not found; build {PLUGIN_LIB}.")
-    triton_python = TRITON_INSTALL_DIR / "python"
-    if not triton_python.is_dir():
-        # Without it the subprocess silently falls back to whatever `triton` is
-        # installed, whose plugin ABI need not match the one we built against.
-        pytest.fail(f"pinned Triton package not found at {triton_python}; "
-                    f"re-fetch it with `ci/download-artifact.py triton`.")
-
-    env_overrides = {
-        "TRITON_PLUGIN_PATHS":
-        str(PLUGIN_LIB),
-        "PYTHONPATH":
-        os.pathsep.join([str(triton_python), str(TLM_PYTHON_DIR)]),
-        "LD_LIBRARY_PATH":
-        str(LLVM_INSTALL_DIR / "lib"),
-    }
+    for package in ("tlM", "triton_mega"):
+        if importlib.util.find_spec(package) is None:
+            pytest.skip(f"{package} not installed "
+                        f"(run `make build && make install`)")
 
     def _run(kernel: str) -> str:
-        env = {**os.environ, **env_overrides}
         result = subprocess.run(
             [sys.executable, str(BUILD_TTIR_SCRIPT), kernel],
-            env=env,
             capture_output=True,
             text=True,
             check=False,

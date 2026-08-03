@@ -1,4 +1,4 @@
-// RUN: triton-opt --split-input-file %s -mega-hoist-first-access | FileCheck %s
+// RUN: mega_hoist_first_access.py %s | %filecheck %s
 
 // A load of a tensor first accessed *after* the barrier is hoisted to just
 // before it; a load of a tensor already accessed *before* the barrier is not.

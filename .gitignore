@@ -12,3 +12,7 @@ triton-*/
 *.dylib
 *.dll
 *.whl
+
+# Compile dumps left beside a tutorial or test by a Triton kernel run.
+*.out
+*.out.s
