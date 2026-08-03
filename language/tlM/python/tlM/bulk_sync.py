@@ -1,8 +1,13 @@
 """tlM language builtins.
 
 These builtins emit `mega` dialect ops via custom TritonOpBuilder methods
-registered by the `mega` dialect plugin (libmega.so):
-  - mega_bulk_sync(arrival_ptr, release_ptr, num_programs, sense)
+registered by the `mega` dialect plugin (libmega.so). Triton names each such
+method `create_<op>`, so the plugin's `mega_bulk_sync` op is emitted through:
+  - builder.create_mega_bulk_sync([arrival_ptr, release_ptr, num_programs,
+                                   sense])
+
+The method only exists once the plugin has been loaded with
+`tlM.register_plugin(...)`.
 """
 
 import triton.language.core as tl
@@ -25,7 +30,13 @@ def bulk_sync(arrival_ptr, release_ptr, num_programs, sense, _semantic=None):
     to the release flag at `release_ptr`, while the others spin until they
     observe `sense`. See the `mega-bulk-sync-lowering` pass for the lowering.
     """
-    _semantic.builder.mega_bulk_sync([
+    create = getattr(_semantic.builder, "create_mega_bulk_sync", None)
+    if create is None:
+        raise RuntimeError(
+            "the `mega` dialect plugin is not loaded: call "
+            "`tlM.register_plugin('<path>/libmega.so')` before compiling a "
+            "kernel that uses `tlM.bulk_sync`.")
+    create([
         _to_ir(arrival_ptr, _semantic),
         _to_ir(release_ptr, _semantic),
         _to_ir(num_programs, _semantic),

@@ -37,10 +37,25 @@ out-of-tree extensions use).
 Requirements
 ------------
 Both plugin libraries must be loadable (this file discovers them under
-``<repo>/build*/lib`` and sets ``TRITON_PLUGIN_PATHS`` *before* importing
-triton):
-  * ``libmega.so``            -- the ``mega`` dialect + ``mega_bulk_sync`` builder
+``<repo>/build*/lib``):
+  * ``libmega.so``            -- the ``mega`` dialect + its builder method
   * ``libmega_bulk_sync.so``  -- the ``mega-bulk-sync-lowering`` pass
+
+Three things have to be registered before the kernel compiles: the `mega`
+dialect, the ``create_mega_bulk_sync`` builder method behind
+``tlM.bulk_sync``, and the ``add_mega_bulk_sync`` pass wrapper used by the
+stages hook below. How that happens depends on the Triton build, so step 0
+does both: it sets ``TRITON_PLUGIN_PATHS`` *before* importing triton (older
+builds, including the revision pinned in ``ci/triton-hash.txt``, enumerate it
+while ``libtriton`` is imported) and then calls the explicit
+``extend_with``-style APIs when the bindings provide them (newer builds load
+nothing on their own).
+
+Triton itself must be built with ``TRITON_EXT_ENABLED=1``; otherwise
+``libtriton.so`` hides its MLIR symbols, the plugins bind to a second copy of
+MLIR, and loading them crashes (or is refused outright by ``triton-opt``).
+The plugins must also be built against the same LLVM that Triton uses --
+mixing two LLVM revisions corrupts the heap rather than failing cleanly.
 
 Run it:
 
@@ -55,14 +70,14 @@ import pathlib
 import sys
 
 # --------------------------------------------------------------------------- #
-# 0. Locate the plugins and register them BEFORE importing triton.
-#    (libtriton enumerates TRITON_PLUGIN_PATHS at import time.)
+# 0. Locate the plugin libraries and register them, BEFORE importing triton:
+#    older builds enumerate TRITON_PLUGIN_PATHS as `libtriton` is imported.
 # --------------------------------------------------------------------------- #
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 _TLM_PYTHON_DIR = pathlib.Path(__file__).resolve().parents[1] / "python"
 
 
-def _find_lib(lib_name: str, env_var: str) -> pathlib.Path | None:
+def _find_lib(lib_name: str, env_var: str) -> pathlib.Path:
     if env := os.environ.get(env_var):
         p = pathlib.Path(env)
         if p.exists():
@@ -71,24 +86,17 @@ def _find_lib(lib_name: str, env_var: str) -> pathlib.Path | None:
         cand = _REPO_ROOT / build_dir / "lib" / lib_name
         if cand.exists():
             return cand
-    return None
+    raise RuntimeError(
+        f"Could not find {lib_name}. Build the extensions first (see README) "
+        f"so they exist under <repo>/build/lib/, or point {env_var} at it.")
 
 
-def _register_plugins() -> None:
-    wanted = (("libmega.so", "MEGA_PLUGIN"),
-              ("libmega_bulk_sync.so", "MEGA_BULK_SYNC_PLUGIN"))
-    libs = [_find_lib(name, env) for name, env in wanted]
-    missing = [name for (name, _), p in zip(wanted, libs) if p is None]
-    if missing:
-        raise RuntimeError(
-            f"Could not find plugin(s): {missing}. Build the extensions first "
-            f"(see README) so they exist under <repo>/build/lib/.")
-    existing = os.environ.get("TRITON_PLUGIN_PATHS", "").split(":")
-    paths = [str(p) for p in libs] + [e for e in existing if e]
-    os.environ["TRITON_PLUGIN_PATHS"] = ":".join(dict.fromkeys(paths))
-
-
-_register_plugins()
+_MEGA_LIB = _find_lib("libmega.so", "MEGA_PLUGIN")
+_BULK_SYNC_LIB = _find_lib("libmega_bulk_sync.so", "MEGA_BULK_SYNC_PLUGIN")
+_libs = [str(_MEGA_LIB), str(_BULK_SYNC_LIB)]
+_libs += [p for p in os.environ.get("TRITON_PLUGIN_PATHS", "").split(os.pathsep)
+          if p]
+os.environ["TRITON_PLUGIN_PATHS"] = os.pathsep.join(dict.fromkeys(_libs))
 
 import torch  # noqa: E402
 import triton  # noqa: E402
@@ -101,6 +109,14 @@ if str(_TLM_PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(_TLM_PYTHON_DIR))
 import tlM  # noqa: E402,F401
 import triton.language.extra.tlM as tlM  # noqa: E402
+
+# `mega` dialect + the `create_mega_bulk_sync` TritonOpBuilder method. On a
+# Triton that auto-loaded the plugin above, this only validates the setup.
+tlM.register_plugin(str(_MEGA_LIB))
+# `mega-bulk-sync-lowering` -> `passes.plugin.add_mega_bulk_sync`; needed only
+# on builds that expose the explicit loader.
+if hasattr(passes.plugin, "extend_with"):
+    passes.plugin.extend_with(str(_BULK_SYNC_LIB))
 
 
 # --------------------------------------------------------------------------- #
@@ -124,7 +140,7 @@ def _bulk_sync_stages_hook(self=None,
         mod = base_make_ttir(mod, metadata, opt, cap)
         pm = ir.pass_manager(mod.context)
         pm.enable_debug()
-        passes.plugin.mega_bulk_sync(pm)
+        passes.plugin.add_mega_bulk_sync(pm)
         pm.run(mod, "mega_bulk_sync_lowering")
         return mod
 
