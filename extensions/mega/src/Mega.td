@@ -20,12 +20,6 @@ class Mega_Op<string mnemonic, list<Trait> traits = []> :
        !listconcat(traits, [])> {
 }
 
-// The effects are declared with `MemoryEffects<...>` rather than
-// `DeclareOpInterfaceMethods<MemoryEffectsOpInterface>` so that TableGen emits
-// `getEffects()` itself. The latter only *declares* the method and leaves the
-// definition to C++; a missing definition links fine and surfaces as an
-// `undefined symbol: ...BulkSyncOp10getEffects...` when MLIR first queries the
-// op's effects.
 def Mega_BulkSyncOp : Mega_Op<"bulk_sync", [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Grid-wide barrier across cooperating programs.";
     let description = [{

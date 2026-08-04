@@ -1,0 +1,26 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "cmake>=3.20", "ninja"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "triton-mega"
+version = "0.1.0"
+description = "Mega: an out-of-tree Triton dialect for grid-wide synchronization, its lowering pass, and the tlM language extension, distributed as a Plugin"
+requires-python = ">=3.9"
+
+[tool.triton-ext]
+status = "experimental"
+enabled = true
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+cmake.build-type = "Release"
+# Keep tutorials and caches out of the wheel.
+wheel.exclude = ["**/__pycache__/**", "**/*.pyc", "tutorials/**"]
+
+# Bundle both pure-Python packages: `triton_mega` registers the plugin, `tlM`
+# is the DSL that emits its ops. CMake installs libmega.so into triton_mega/
+# using `install()` (see CMakeLists.txt).
+[tool.scikit-build.wheel.packages]
+triton_mega = "python/triton_mega"
+tlM = "python/tlM"

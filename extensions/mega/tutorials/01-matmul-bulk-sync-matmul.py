@@ -56,7 +56,7 @@ mixing two LLVM revisions corrupts the heap rather than failing cleanly.
 
 Run it:
 
-    python language/tlM/tutorials/01-matmul-bulk-sync-matmul.py
+    python extensions/mega/tutorials/01-matmul-bulk-sync-matmul.py
 """
 
 from __future__ import annotations
@@ -71,16 +71,13 @@ from triton import knobs
 from triton._C.libtriton import ir, passes
 
 # --------------------------------------------------------------------------- #
-# 0. Register the extensions by importing them. Each wheel's `__init__` hands
-#    its bundled `.so` to Triton, so this is the whole setup:
-#      * `tlM`                   -> the builtin; also imports `triton_mega`,
-#                                   giving the `mega` dialect and the
-#                                   `create_mega_bulk_sync` builder method
-#      * `triton_mega_bulk_sync` -> `passes.plugin.add_mega_bulk_sync`, used
-#                                   by the stages hook below
+# 0. Register the extension by importing it. The wheel's `__init__` hands its
+#    bundled `.so` to Triton, so this one import is the whole setup:
+#    `tlM` gives the builtin and pulls in `triton_mega`, which registers the
+#    `mega` dialect, the `create_mega_bulk_sync` builder method, and the
+#    `passes.plugin.add_mega_bulk_sync` pass used by the stages hook below.
 # --------------------------------------------------------------------------- #
 import tlM  # also registers it as triton.language.extra.tlM (same module)
-import triton_mega_bulk_sync  # noqa: F401  registers the lowering pass
 
 
 # --------------------------------------------------------------------------- #

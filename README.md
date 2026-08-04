@@ -41,12 +41,10 @@ Extensions live in subdirectories, each built as a separate Triton wheel:
 - **[`pass/`](./pass/)**: For adding MLIR passes to Triton (e.g.,
   [`arithmetic-intensity`][arithmetic-intensity]).
 
-- **[`language/`](./language/)**: For pure-Python language extensions — a DSL
-  that emits an out-of-tree dialect's ops through the builder methods that
-  dialect's plugin registers (e.g., [`tlM`][tlm]).
-
 - **[`extensions/`](./extensions/)**: For extensions that bundle dialects,
-  passes, and language bindings together (e.g., [`utlx`][utlx]).
+  passes, and language bindings together (e.g., [`utlx`][utlx], [`mega`][mega] —
+  a dialect, the pass that lowers it, and the [`tlM`][tlm] DSL that emits it, in
+  one wheel).
 
 - **[`support/`](./support/)**: Contains infrastructure code to automatically
   register extensions with Triton.
@@ -146,10 +144,11 @@ import triton-<extension>
 [download_llvm]: ./ci/download_llvm.py
 [download_triton]: ./ci/download_triton_wheel.py
 [list_triton]: ./ci/list_triton_wheels.py
+[mega]: ./extensions/mega/
 [search]: ./ci/pick_local_artifact.py
 [slides-jan-2026]: https://docs.google.com/presentation/d/1dnm8uhvabdwqsQAsaPM7IRpEh2tktQ91E1d40r91n1M
 [slides-jul-2026]: https://docs.google.com/presentation/d/1QwuwCZbhwUnFKA9VSxR0Lww0guwnmJtt6TvdUkMQooE
-[tlm]: ./language/tlM/
+[tlm]: ./extensions/mega/python/tlM/
 [triton-plugins]: https://github.com/triton-lang/triton/tree/main/examples/plugins
 [utlx]: ./extensions/utlx/
 [`gh`]: https://cli.github.com/

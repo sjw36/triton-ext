@@ -8,9 +8,9 @@ Stops at TTIR (the frontend's output) rather than running a full
 there is no GPU code-gen path for it. Building TTIR with a stub target needs no
 GPU, mirroring Triton's own `triton._filecheck` frontend tests.
 
-Requires the `triton-tlM` and `triton-mega` wheels to be installed
-(`make build install`); importing `tlM` pulls in `triton_mega`, which
-registers the dialect and the builder method.
+Requires the `triton-mega` wheel to be installed (`make build install`);
+importing `tlM` pulls in `triton_mega`, which registers the dialect and the
+builder method.
 
 Usage:
     python build_ttir.py <kernel>

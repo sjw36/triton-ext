@@ -6,13 +6,13 @@ and we assert that the resulting TTIR contains the ``mega.bulk_sync`` op with
 the expected operands.
 
 Each test spawns a subprocess running ``build_ttir.py``. The subprocess needs
-no environment overrides: `tlM` and the `mega` dialect are installed wheels, so
-``import tlM`` loads the plugin and registers ``triton.language.extra.tlM``.
+no environment overrides: `tlM` and `triton_mega` ship in one installed wheel,
+so ``import tlM`` loads the plugin and registers ``triton.language.extra.tlM``.
 It stays a subprocess because loading a plugin mutates Triton's global dialect
 and builder registries, which is worth keeping out of the pytest process.
 
-The extensions must be installed first (``make build install``); the fixture
-skips rather than fails if they are not, matching ``testing/test_plugins.py``.
+The extension must be installed first (``make build install``); the fixture
+skips rather than fails if it is not, matching ``testing/test_plugins.py``.
 There is no ABI-mismatch hazard to guard against here — a wheel is built
 against the Triton it is installed next to.
 """

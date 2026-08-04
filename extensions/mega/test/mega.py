@@ -6,8 +6,8 @@ verify that `mega` ops round-trip and are not folded away. Importing
 ``triton_mega`` registers the dialect with Triton; both Triton and the
 extension must be installed (``make build install``).
 
-Lowering `mega.bulk_sync` is a separate extension — see
-``pass/MegaBulkSync`` and its ``mega_bulk_sync.py`` driver.
+This driver runs canonicalization only. Lowering `mega.bulk_sync` is a separate
+pipeline — see the ``mega_bulk_sync.py`` driver beside this one.
 
 Run by hand with::
 

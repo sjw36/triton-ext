@@ -34,8 +34,8 @@ def bulk_sync(arrival_ptr, release_ptr, num_programs, sense, _semantic=None):
     if create is None:
         raise RuntimeError(
             "the `mega` dialect plugin is not loaded: install the "
-            "`triton-mega` wheel (`make build install` in dialect/Mega) and "
-            "import `tlM` before compiling a kernel that uses "
+            "`triton-mega` wheel (`make build install` in extensions/mega) "
+            "and import `tlM` before compiling a kernel that uses "
             "`tlM.bulk_sync`.")
     create([
         _to_ir(arrival_ptr, _semantic),

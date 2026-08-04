@@ -32,7 +32,7 @@ void MegaDialect::initialize() {
 // ---------------------------------------------------------------------------
 // Python frontend hook: a custom TritonOpBuilder method `mega_bulk_sync`.
 //
-// The `tlM` language extension (language/tlM) calls this from a `@tl.builtin`
+// The `tlM` language extension (python/tlM) calls this from a `@tl.builtin`
 // via `_semantic.builder.mega_bulk_sync([...])` to emit `mega.bulk_sync`.
 //
 // Following the convention used by other plugins (see uTLXPlugin.cpp), Triton

@@ -30,8 +30,9 @@ namespace ttg = mlir::triton::gpu;
 
 namespace {
 
-/// Matched by mnemonic so this pass does not need to link against the `mega`
-/// dialect library; only the operand layout is relied upon.
+/// Matched by mnemonic so this pass depends on none of the dialect's C++
+/// headers, even though the two now build into one library; only the operand
+/// layout is relied upon.
 static constexpr llvm::StringLiteral kBulkSyncName = "mega.bulk_sync";
 
 /// Build a scalar `tt.atomic_rmw` (one element, no mask) and return the loaded
