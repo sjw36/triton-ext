@@ -53,12 +53,6 @@ def test_modulo_equation_evaluates():
         }},
     )
     # 10 % 8 = 2 iterations, 1024 bytes each.
-    assert equations.evaluate(1, arg_values={
-        1: 10,
-        2: 8
-    }).load_bytes == 2048
+    assert equations.evaluate(1, arg_values={1: 10, 2: 8}).load_bytes == 2048
     # An exact multiple of the modulus runs zero times.
-    assert equations.evaluate(1, arg_values={
-        1: 16,
-        2: 8
-    }).load_bytes == 0
+    assert equations.evaluate(1, arg_values={1: 16, 2: 8}).load_bytes == 0
