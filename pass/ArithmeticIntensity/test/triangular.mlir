@@ -2,9 +2,10 @@
 
 // Inner loop bound IS an outer induction variable. The pass substitutes the IV
 // with the outer loop's upper bound, yielding a quadratic upper-bound estimate:
-// args[1] appears twice (outer trip * IV-substituted inner trip), per-iter 1024.
+// args[1] appears twice (outer trip * IV-substituted inner trip). Each trip
+// is clamped at zero, and the inner one absorbs the 1024 bytes per iteration.
 // CHECK-LABEL: tt.func @triangular(
-// CHECK-SAME:  %arg0: !tt.ptr<f32> {tai.load_bytes = "args[1] * (args[1] * 1024)"}
+// CHECK-SAME:  %arg0: !tt.ptr<f32> {tai.load_bytes = "max(args[1], 0) * max(args[1] * 1024, 0)"}
 tt.func @triangular(%in: !tt.ptr<f32>, %M: i32) {
   %c0 = arith.constant 0 : i32
   %c1 = arith.constant 1 : i32

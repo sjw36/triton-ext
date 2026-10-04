@@ -11,9 +11,9 @@
 //   * attribute C compute = dot FLOPs scaled by trip count (2*M*N*K = 524288
 //     per dot block with M=N=K=64) plus the epilogue truncf (64*64 = 4096).
 // CHECK-LABEL: tt.func @matmul_ptr(
-// CHECK-SAME:  %arg0: !tt.ptr<f16> {tai.load_bytes = "(args[5] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg1: !tt.ptr<f16> {tai.load_bytes = "(args[5] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg2: !tt.ptr<f16> {tai.op_count = "(args[5] ceildiv 64) * 524288 + 4096", tai.store_bytes = "8192"}
+// CHECK-SAME:  %arg0: !tt.ptr<f16> {tai.load_bytes = "max(ceildiv(args[5], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg1: !tt.ptr<f16> {tai.load_bytes = "max(ceildiv(args[5], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg2: !tt.ptr<f16> {tai.op_count = "max(ceildiv(args[5], 64) * 524288 + 4096, 4096)", tai.store_bytes = "8192"}
 tt.func @matmul_ptr(%A: !tt.ptr<f16>, %B: !tt.ptr<f16>, %C: !tt.ptr<f16>,
                     %M: i32, %N: i32, %K: i32,
                     %sam: i32, %sak: i32,

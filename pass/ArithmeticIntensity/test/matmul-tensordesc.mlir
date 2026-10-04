@@ -7,9 +7,9 @@
 // counterparts, attributing load/store bytes and compute to the descriptor arg
 // (`isPointerLikeFuncArgType` accepts `!tt.tensordesc<>`).
 // CHECK-LABEL: tt.func @matmul_tensordesc(
-// CHECK-SAME:  %arg0: !tt.tensordesc<64x64xf16> {tai.load_bytes = "(args[5] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg1: !tt.tensordesc<64x64xf16> {tai.load_bytes = "(args[5] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg2: !tt.tensordesc<64x64xf16> {tai.op_count = "(args[5] ceildiv 64) * 524288 + 4096", tai.store_bytes = "8192"}
+// CHECK-SAME:  %arg0: !tt.tensordesc<64x64xf16> {tai.load_bytes = "max(ceildiv(args[5], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg1: !tt.tensordesc<64x64xf16> {tai.load_bytes = "max(ceildiv(args[5], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg2: !tt.tensordesc<64x64xf16> {tai.op_count = "max(ceildiv(args[5], 64) * 524288 + 4096, 4096)", tai.store_bytes = "8192"}
 tt.func @matmul_tensordesc(%A: !tt.tensordesc<64x64xf16>,
                            %B: !tt.tensordesc<64x64xf16>,
                            %C: !tt.tensordesc<64x64xf16>,
@@ -41,9 +41,9 @@ tt.func @matmul_tensordesc(%A: !tt.tensordesc<64x64xf16>,
 // must be counted once. `tt.reshape`, `tt.trans` and `tt.split` contribute
 // nothing; only the per-half `truncf` (2 * 2048) is added on top.
 // CHECK-LABEL: tt.func @matmul_tensordesc_subtile(
-// CHECK-SAME:  %arg0: !tt.tensordesc<64x64xf16> {tai.load_bytes = "(args[3] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg1: !tt.tensordesc<64x64xf16> {tai.load_bytes = "(args[3] ceildiv 64) * 8192"}
-// CHECK-SAME:  %arg2: !tt.tensordesc<64x32xf16> {tai.op_count = "(args[3] ceildiv 64) * 524288 + 4096", tai.store_bytes = "8192"}
+// CHECK-SAME:  %arg0: !tt.tensordesc<64x64xf16> {tai.load_bytes = "max(ceildiv(args[3], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg1: !tt.tensordesc<64x64xf16> {tai.load_bytes = "max(ceildiv(args[3], 64) * 8192, 0)"}
+// CHECK-SAME:  %arg2: !tt.tensordesc<64x32xf16> {tai.op_count = "max(ceildiv(args[3], 64) * 524288 + 4096, 4096)", tai.store_bytes = "8192"}
 tt.func @matmul_tensordesc_subtile(%A: !tt.tensordesc<64x64xf16>,
                                    %B: !tt.tensordesc<64x64xf16>,
                                    %C: !tt.tensordesc<64x32xf16>,

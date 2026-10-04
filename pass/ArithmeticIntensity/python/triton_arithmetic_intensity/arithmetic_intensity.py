@@ -12,8 +12,8 @@ performs against that argument:
     argument.
 
 The equations are symbolic, written over ``args[i]`` (the i-th ``tt.func``
-argument), ``program_id[i]`` and ``num_programs[i]``, with ``/`` and ``%``
-denoting floor-division and modulo.
+argument), ``program_id[i]`` and ``num_programs[i]``. ``%`` is modulo.
+``floordiv``, ``ceildiv``, ``min``, and ``max`` are function calls.
 
 :mod:`triton_arithmetic_intensity.custom_stages` runs the pass at the end of
 every ``ttir`` compilation stage and records the equations of each function
@@ -83,9 +83,9 @@ def _eval_equation(equation: str, args: _BoundArgs, program_id: Tuple[int, int,
     """Evaluate one equation for a single program.
 
     The equation is plain Python once ``args`` / ``program_id`` /
-    ``num_programs`` are in scope; the only fix-up is mapping the affine
-    printer's ``/`` (floor-division) to Python's ``//`` so op counts stay
-    integral (``%`` already matches Python's modulo).
+    ``num_programs`` / ``min`` / ``max`` / ``floordiv`` / ``ceildiv`` are in
+    scope. ``%`` is Python's modulo. A ``/`` left over from an older equation
+    is still floor division, so it is rewritten to ``//``.
     """
     expr = equation.replace("/", "//")
     try:
@@ -93,6 +93,10 @@ def _eval_equation(equation: str, args: _BoundArgs, program_id: Tuple[int, int,
             "args": args,
             "program_id": program_id,
             "num_programs": num_programs,
+            "min": min,
+            "max": max,
+            "floordiv": lambda lhs, rhs: lhs // rhs,
+            "ceildiv": lambda lhs, rhs: -(-lhs // rhs),
         })
     except NameError as exc:
         # The pass binds values it cannot express (e.g. results of

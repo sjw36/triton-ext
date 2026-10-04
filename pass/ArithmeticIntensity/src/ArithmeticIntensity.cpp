@@ -23,23 +23,25 @@
 //   2. For every load/store, trace the address back to its originating
 //      function-argument via `findPointerParam`, then aggregate the metric
 //      bottom-up to function scope, multiplying by the symbolic trip count
-//      of each enclosing `scf.for` and approximating `scf.if` by the
-//      then-branch contribution.
-//   3. Write the resulting `AffineExpr` back to the `tt.func` argument as
-//      a string attribute.
+//      of each enclosing `scf.for`. An `scf.if` result used as a bound is
+//      the `max` of the two yields.
+//   3. Write the resulting `SymExpr` back to the `tt.func` argument as a
+//      string attribute.
 //
 // ## Symbolic equations
 //
-// Equations are built as MLIR `AffineExpr` over a per-function symbol
-// table (`SymTable`) that maps each "leaf" `Value` (function arg, program
-// id, num programs, opaque integer producer) to an `AffineSymbolExpr`, so
-// constant folding, canonicalization, and `simplifyAffineExpr` come for
-// free. At print time the simplified expression is post-processed:
-// `s<N>` symbol tokens are rewritten to source-level names
-// (`args[N]`, `program_id[N]`, `num_programs[N]`), and the affine
-// printer's `floordiv`/`mod` keywords are rewritten to `/` and `%`.
-// `ceildiv` is not handled: the pass never produces it and
-// `simplifyAffineExpr` does not introduce it.
+// Equations are `SymExpr` values (see `SymExpr.h`): an MLIR `AffineExpr`,
+// or a `min` / `max` of such expressions. `SymTable` maps each leaf
+// `Value` (function arg, program id, num programs, opaque integer
+// producer) to an `AffineSymbolExpr`. Affine subtrees still constant-fold
+// and pass through `simplifyAffineExpr`. `min` and `max` stay outside
+// `AffineExpr`, which has no such kinds; `+`, `-`, and multiplication or
+// division by a positive constant distribute over them.
+//
+// At print time each affine subtree is simplified. `s<N>` symbol tokens
+// are rewritten to source-level names (`args[N]`, `program_id[N]`,
+// `num_programs[N]`). `%` is modulo. `floordiv` and `ceildiv` print as
+// function calls, like `min` and `max`.
 //
 // ## Metric model
 //
@@ -56,15 +58,19 @@
 //
 // ## Control flow
 //
-//   - `scf.for` trip count = `cdiv(upper - lower, step)`
+//   - `scf.for` trip count = `max(cdiv(upper - lower, step), 0)`, so a
+//     descending span (`upper < lower`) contributes no iterations.
 //   - `scf.for` iter_args are substituted with their init value (exact
 //     when the iter_arg is loop-invariant, safe otherwise).
 //   - `scf.for` induction variables are substituted with the loop's upper
 //     bound, giving a conservative upper-bound estimate when an inner
 //     loop's bound references an outer IV.
-//   - `scf.if` results are approximated by the then-branch yield.
-//     `AffineExpr` has no `max(...)`; expressing that would need a
-//     structured attribute.
+//   - `scf.if` results used as symbolic values are `max(then, else)`, an
+//     upper bound on the yielded value. `arith.min*` / `arith.max*` are
+//     recorded as `min` / `max`.
+//   - An op nested in `scf.if` is counted at its full size. The function
+//     walk still sums both sides, which over-approximates work that runs
+//     on only one side.
 //   - Unrecognised integer producers fall back to a fresh opaque symbol so
 //     downstream arithmetic still produces a well-formed equation rather
 //     than crashing the pass.
@@ -85,8 +91,10 @@
 //
 //===---------------------------------------------------------------------===//
 
+#include "SymExpr.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/IR/AffineExpr.h"
 #include "mlir/Pass/Pass.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -110,6 +118,8 @@ namespace mlir::triton {
 } // namespace mlir::triton
 
 namespace {
+
+using tai::SymExpr;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Metric class
@@ -360,38 +370,36 @@ private:
 //
 // Holds the mapping from "leaf" `Value`s (function arguments, program IDs,
 // opaque integer producers) to AffineSymbolExpr indices for a single function,
-// and knows how to serialise an `AffineExpr` built over those symbols back to
+// and knows how to serialise a `SymExpr` built over those symbols back to
 // a human-readable string with source-level names.
 ////////////////////////////////////////////////////////////////////////////////
 class SymTable {
 public:
   SymTable(triton::FuncOp func)
-      : func(func), ctx(func.getContext()),
-        entryBlock(&func.getBody().front()) {}
+      : func(func), ctx(func.getContext()), entryBlock(&func.getBody().front()),
+        exprs(ctx) {}
 
   MLIRContext *getContext() const { return ctx; }
 
-  AffineExpr get(Value v) {
+  SymExpr get(Value v) {
     auto [it, inserted] = indexByValue.try_emplace(v, values.size());
     if (inserted)
       values.push_back(v);
-    return getAffineSymbolExpr(it->second, ctx);
+    return exprs.getAffine(getAffineSymbolExpr(it->second, ctx));
   }
 
-  AffineExpr constant(int64_t c) const { return getAffineConstantExpr(c, ctx); }
+  SymExpr constant(int64_t c) { return exprs.getConstant(c); }
 
   // Simplify and serialise `expr`, substituting `s<i>` tokens with the
-  // source-level name of the value at index `i` and rewriting affine-printer
-  // keywords (`floordiv`, `mod`) to `/` and `%`.
-  std::string print(AffineExpr expr) const {
+  // source-level name of the value at index `i`.
+  std::string print(SymExpr expr) const {
     if (!expr)
       return "";
-    AffineExpr simplified = simplifyAffineExpr(expr, /*numDims=*/0,
-                                               /*numSymbols=*/values.size());
+    expr = expr.simplify(/*numSymbols=*/values.size());
     std::string raw;
     {
       llvm::raw_string_ostream os(raw);
-      simplified.print(os);
+      expr.print(os);
     }
     return rewrite(raw);
   }
@@ -420,37 +428,19 @@ private:
     out.reserve(raw.size());
     for (size_t i = 0, n = raw.size(); i < n;) {
       bool atBoundary = (i == 0) || !isIdent(raw[i - 1]);
-      if (atBoundary) {
-        auto tryKeyword = [&](StringRef kw, StringRef repl) {
-          if (raw.substr(i, kw.size()) != kw)
-            return false;
-          if (i + kw.size() < n && isIdent(raw[i + kw.size()]))
-            return false;
-          out.append(repl.begin(), repl.end());
-          i += kw.size();
-          return true;
-        };
-        if (tryKeyword("floordiv", "/"))
-          continue;
-        // TODO: re-enable this when we have a way to represent ceildiv
-        // if (tryKeyword("ceildiv", "/"))
-        //  continue;
-        if (tryKeyword("mod", "%"))
-          continue;
-        if (raw[i] == 's' && i + 1 < n &&
-            std::isdigit(static_cast<unsigned char>(raw[i + 1]))) {
-          size_t j = i + 1;
-          unsigned idx = 0;
-          while (j < n && std::isdigit(static_cast<unsigned char>(raw[j]))) {
-            idx = idx * 10 + (raw[j] - '0');
-            ++j;
-          }
-          if (j == n || !isIdent(raw[j])) {
-            if (idx < values.size()) {
-              out += nameForSymbol(idx);
-              i = j;
-              continue;
-            }
+      if (atBoundary && raw[i] == 's' && i + 1 < n &&
+          std::isdigit(static_cast<unsigned char>(raw[i + 1]))) {
+        size_t j = i + 1;
+        unsigned idx = 0;
+        while (j < n && std::isdigit(static_cast<unsigned char>(raw[j]))) {
+          idx = idx * 10 + (raw[j] - '0');
+          ++j;
+        }
+        if (j == n || !isIdent(raw[j])) {
+          if (idx < values.size()) {
+            out += nameForSymbol(idx);
+            i = j;
+            continue;
           }
         }
       }
@@ -462,6 +452,7 @@ private:
   triton::FuncOp func;
   MLIRContext *ctx;
   Block *entryBlock;
+  SymExpr::Context exprs;
   DenseMap<Value, unsigned> indexByValue;
   SmallVector<Value> values;
 };
@@ -513,7 +504,7 @@ class ArithmeticIntensityAnalysisDriver {
     return BlockArgument();
   }
 
-  // Resolve `value` to an AffineExpr over symbolic leaves (function block
+  // Resolve `value` to a SymExpr over symbolic leaves (function block
   // arguments, program_id / num_programs results, opaque integer producers).
   //
   // Approximations:
@@ -525,13 +516,13 @@ class ArithmeticIntensityAnalysisDriver {
   //    is exact when the iter_arg's symbolic value is invariant across
   //    iterations (common for shape / size / bound bookkeeping), and a
   //    safe approximation otherwise.
-  //  - scf.if results are approximated by the then-branch's yielded value.
-  //    AffineExpr does not represent max(...); a future structured
-  //    attribute (#tt.density<...>) can express this directly.
+  //  - scf.if results are `max(then, else)`, an upper bound on the yielded
+  //    value. `arith.minsi` / `minui` / `maxsi` / `maxui` are recorded as
+  //    `min` / `max`.
   //  - Unrecognised integer producers are bound to a fresh opaque symbol so
   //    that downstream multiplication / addition still produces a
   //    well-formed equation rather than crashing the pass.
-  AffineExpr getSymbolicValue(Value value) {
+  SymExpr getSymbolicValue(Value value) {
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       auto parentOp = blockArg.getOwner()->getParentOp();
       if (isa<triton::FuncOp>(parentOp))
@@ -567,8 +558,12 @@ class ArithmeticIntensityAnalysisDriver {
     }
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       unsigned resultIdx = cast<OpResult>(value).getResultNumber();
-      auto *thenYield = ifOp.thenBlock()->getTerminator();
-      return getSymbolicValue(thenYield->getOperand(resultIdx));
+      SymExpr thenExpr =
+          getSymbolicValue(ifOp.thenYield().getOperand(resultIdx));
+      if (!ifOp.elseBlock())
+        return thenExpr;
+      return SymExpr::max(
+          thenExpr, getSymbolicValue(ifOp.elseYield().getOperand(resultIdx)));
     }
     if (defOp->getNumOperands() == 2) {
       auto lhs = getSymbolicValue(defOp->getOperand(0));
@@ -583,41 +578,45 @@ class ArithmeticIntensityAnalysisDriver {
         return lhs.floorDiv(rhs);
       if (isa<arith::RemSIOp, arith::RemUIOp>(defOp))
         return lhs % rhs;
+      if (isa<arith::MinSIOp, arith::MinUIOp>(defOp))
+        return SymExpr::min(lhs, rhs);
+      if (isa<arith::MaxSIOp, arith::MaxUIOp>(defOp))
+        return SymExpr::max(lhs, rhs);
     }
     LDBG("Treating unsupported integer producer as opaque symbol: " << *defOp);
     return syms.get(value);
   }
 
-  AffineExpr getSymbolicIterations(scf::ForOp forOp) {
+  SymExpr getSymbolicIterations(scf::ForOp forOp) {
     auto upperBound = getSymbolicValue(forOp.getUpperBound());
     auto lowerBound = getSymbolicValue(forOp.getLowerBound());
     auto step = getSymbolicValue(forOp.getStep());
-    // `scf.for` runs `ceil((ub - lb) / step)` iterations (step > 0), e.g. a
-    // persistent loop `range(pid, num_tiles, NUM_SMS)`. Written with
-    // floordiv so that the equation printer (which has no `ceildiv`) and
-    // the Python evaluator keep working.
-    return (upperBound - lowerBound).ceilDiv(step);
+    // `scf.for` runs `ceil((ub - lb) / step)` iterations when `step > 0`
+    // (e.g. a persistent loop `range(pid, num_tiles, NUM_SMS)`). A negative
+    // span runs zero times.
+    SymExpr iters = (upperBound - lowerBound).ceilDiv(step);
+    return SymExpr::max(iters, syms.constant(0));
   }
 
   // Multiply the per-execution `size` of `op` by the symbolic trip count of
   // every enclosing `scf.for`, up to function scope.
-  AffineExpr scaleByTripCount(Operation *op, AffineExpr size) {
+  SymExpr scaleByTripCount(Operation *op, SymExpr size) {
     auto parentOp = op->getParentOp();
     if (isa<FunctionOpInterface>(parentOp))
       return size;
     if (auto forOp = dyn_cast<scf::ForOp>(parentOp)) {
       size = getSymbolicIterations(forOp) * size;
     } else if (isa<scf::IfOp>(parentOp)) {
-      // scf.if: keep `size` as the then-branch contribution. AffineExpr has
-      // no max(); see SymTable header comment.
+      // Count the op at full size. It runs on at most one side; the walk
+      // still sums both sides.
     } else {
       LDBG("Unsupported parent op: " << parentOp->getName());
     }
     return scaleByTripCount(parentOp, size);
   }
 
-  AffineExpr calculateCompute(Value value, DenseSet<Value> &visited,
-                              SmallVector<Value> &edges) {
+  SymExpr calculateCompute(Value value, DenseSet<Value> &visited,
+                           SmallVector<Value> &edges) {
     if (auto blockArg = dyn_cast<BlockArgument>(value)) {
       if (auto forOp =
               dyn_cast<scf::ForOp>(blockArg.getOwner()->getParentOp())) {
@@ -630,7 +629,7 @@ class ArithmeticIntensityAnalysisDriver {
         assert(isa<FunctionOpInterface>(blockArg.getOwner()->getParentOp()) &&
                "Expected function argument");
       }
-      return AffineExpr();
+      return SymExpr();
     }
 
     auto *defOp = value.getDefiningOp();
@@ -638,13 +637,13 @@ class ArithmeticIntensityAnalysisDriver {
       unsigned idx = cast<OpResult>(value).getResultNumber();
       auto *yieldOp = forOp.getBody()->getTerminator();
       edges.push_back(yieldOp->getOperand(idx));
-      return AffineExpr();
+      return SymExpr();
     }
     if (isa<triton::ReduceOp>(defOp)) {
       // Treat like a normal compute op (handled by the chain walk below).
     } else if (defOp->getNumRegions() > 0) {
       LDBG("Unsupported region-bearing op in compute chain: " << *defOp);
-      return AffineExpr();
+      return SymExpr();
     }
 
     auto &blockMetrics = metrics.at(defOp->getBlock());
@@ -652,14 +651,14 @@ class ArithmeticIntensityAnalysisDriver {
     return syms.constant(mval.getSize());
   }
 
-  AffineExpr calculateCompute(Value value, DenseSet<Value> &visited) {
+  SymExpr calculateCompute(Value value, DenseSet<Value> &visited) {
     SmallVector<Value> edges;
-    AffineExpr computeSize = calculateCompute(value, visited, edges);
+    SymExpr computeSize = calculateCompute(value, visited, edges);
     auto *valueOp = value.getDefiningOp();
     if (computeSize && valueOp != nullptr)
       computeSize = scaleByTripCount(valueOp, computeSize);
     for (auto edge : edges) {
-      AffineExpr edgeMetric = calculateCompute(edge, visited);
+      SymExpr edgeMetric = calculateCompute(edge, visited);
       if (edgeMetric)
         computeSize = computeSize ? computeSize + edgeMetric : edgeMetric;
     }
@@ -676,7 +675,7 @@ public:
     func.walk<WalkOrder::PostOrder>(
         [&](Block *block) { metrics.try_emplace(block, block); });
 
-    auto add = [](AffineExpr &acc, AffineExpr addend) {
+    auto add = [](SymExpr &acc, SymExpr addend) {
       acc = acc ? acc + addend : addend;
     };
 
@@ -696,7 +695,7 @@ public:
         }
         auto metric = metrics.at(op->getBlock()).getMetric(op->getResult(0));
         if (metric) {
-          AffineExpr total =
+          SymExpr total =
               scaleByTripCount(op, syms.constant(metric->getSize()));
           add(loadBytesMetrics[param.getArgNumber()], total);
         }
@@ -707,10 +706,10 @@ public:
           return;
         }
         Metric storeMetric = metrics.at(op->getBlock()).getStoreOpMetric(op);
-        AffineExpr total =
+        SymExpr total =
             scaleByTripCount(op, syms.constant(storeMetric.getSize()));
         add(storeBytesMetrics[param.getArgNumber()], total);
-        AffineExpr compute = calculateCompute(op->getOperand(1), visited);
+        SymExpr compute = calculateCompute(op->getOperand(1), visited);
         if (compute)
           add(computeMetrics[param.getArgNumber()], compute);
       }
@@ -740,14 +739,14 @@ public:
   }
 
 private:
-  std::optional<std::string> printMetric(ArrayRef<AffineExpr> exprs,
+  std::optional<std::string> printMetric(ArrayRef<SymExpr> exprs,
                                          unsigned index) const {
     if (index >= exprs.size() || !exprs[index])
       return std::nullopt;
     return syms.print(exprs[index]);
   }
 
-  void dumpMetrics(StringRef label, ArrayRef<AffineExpr> exprs) const {
+  void dumpMetrics(StringRef label, ArrayRef<SymExpr> exprs) const {
     llvm::errs() << label << " Metrics: " << exprs.size() << "\n";
     for (unsigned i = 0; i < exprs.size(); ++i) {
       llvm::errs() << label << " Metric: index= " << i << ", size= "
@@ -761,9 +760,9 @@ private:
   DenseMap<Block *, BlockMetrics> metrics;
   // Per function argument: bytes loaded from / stored to memory rooted at
   // the argument, and FLOPs feeding the stores rooted at it.
-  SmallVector<AffineExpr> loadBytesMetrics;
-  SmallVector<AffineExpr> storeBytesMetrics;
-  SmallVector<AffineExpr> computeMetrics;
+  SmallVector<SymExpr> loadBytesMetrics;
+  SmallVector<SymExpr> storeBytesMetrics;
+  SmallVector<SymExpr> computeMetrics;
 };
 
 ////////////////////////////////////////////////////////////////////////////////
