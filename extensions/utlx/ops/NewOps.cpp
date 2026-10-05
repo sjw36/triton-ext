@@ -8,6 +8,7 @@
 #include "ops/NewOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OperationSupport.h"
@@ -730,11 +731,13 @@ void utlx::createGlobalScratchAlloc(TritonOpBuilder &self,
 /// attribute because plugin ops can only pass mlir::Values.
 void utlx::createMakeAmdMfmaLayout(TritonOpBuilder &self,
                                    std::vector<mlir::Value> &operands) {
-  if (operands.size() < 8)
+  // version, instrShape[3], transposed, then one warpsPerCTA entry per dim
+  // (2 for a matrix, 3 with a leading batch dim).
+  if (operands.size() < 8 || operands.size() > 9)
     return;
 
-  llvm::SmallVector<unsigned, 7> args;
-  for (size_t i = 1; i < 8; ++i) {
+  llvm::SmallVector<unsigned, 8> args;
+  for (size_t i = 1; i < operands.size(); ++i) {
     auto v = extractConstInt(operands[i]);
     if (!v)
       return;
@@ -744,18 +747,22 @@ void utlx::createMakeAmdMfmaLayout(TritonOpBuilder &self,
   unsigned version = args[0];
   llvm::SmallVector<unsigned, 3> instrShape = {args[1], args[2], args[3]};
   bool isTransposed = args[4] != 0;
-  llvm::SmallVector<unsigned, 2> warpsPerCTA = {args[5], args[6]};
+  llvm::SmallVector<unsigned, 3> warpsPerCTA(args.begin() + 5, args.end());
+  unsigned rank = warpsPerCTA.size();
 
   auto *context = self.getBuilder().getContext();
-  auto CGALayout = ttg::CGAEncodingAttr::get1CTALayout(context, 2);
+  auto CGALayout = ttg::CGAEncodingAttr::get1CTALayout(context, rank);
   auto encoding = ttg::AMDMfmaEncodingAttr::get(
       context, version, warpsPerCTA, instrShape, isTransposed, CGALayout);
 
-  // Nominal carrier shape: one full MFMA tile per warp across the CTA. Only
-  // the encoding is ever read back off this type.
-  llvm::SmallVector<int64_t, 2> shape = {
-      static_cast<int64_t>(instrShape[0] * warpsPerCTA[0]),
-      static_cast<int64_t>(instrShape[1] * warpsPerCTA[1])};
+  // Nominal carrier shape: one full MFMA tile per warp across the CTA (one
+  // batch entry per warp on a leading batch dim). Only the encoding is ever
+  // read back off this type.
+  llvm::SmallVector<int64_t, 3> shape;
+  if (rank == 3)
+    shape.push_back(warpsPerCTA[0]);
+  shape.push_back(static_cast<int64_t>(instrShape[0] * warpsPerCTA[rank - 2]));
+  shape.push_back(static_cast<int64_t>(instrShape[1] * warpsPerCTA[rank - 1]));
   auto elemTy = self.getBuilder().getF32Type();
 
   auto tensorType = mlir::RankedTensorType::get(shape, elemTy, encoding);
@@ -1041,4 +1048,82 @@ void utlx::createLocalSlice(TritonOpBuilder &self,
       srcTy.getMemorySpace(), srcTy.getMutableMemory(), srcTy.getAllocShape());
   operands[0] = self.create<ttg::MemDescSubsliceOp>(newType, src,
                                                     llvm::ArrayRef(offsets));
+}
+
+// ---------------------------------------------------------------------------
+// utlx_reconcile_region_types
+// ---------------------------------------------------------------------------
+// require_layout gives a value an encoded tensor type while frontend code
+// generation is still in progress. A variable that is plain on one control
+// flow edge and encoded on another, e.g. an accumulator initialised with
+// tl.zeros and reassigned from a require_layout'd value inside a loop, then
+// yields a type that differs from the scf.for iter arg or the scf.if result
+// in encoding alone. Fork TLX's frontend tolerates this; upstream's emits IR
+// that fails verification. The same happens at tt.call and tt.return, whose
+// signatures are built from the frontend types, which do not track encodings
+// picked up from operands (tl.dot with an encoded acc, arithmetic on one).
+// Once the function is finalised, this walks it and casts each such operand to
+// the expected type: release_layout when the expected type is plain,
+// require_layout when it is encoded.
+
+static mlir::Value castEncoding(mlir::OpBuilder &b, mlir::Value v,
+                                mlir::Type expected) {
+  auto srcTy = mlir::dyn_cast<mlir::RankedTensorType>(v.getType());
+  auto dstTy = mlir::dyn_cast<mlir::RankedTensorType>(expected);
+  if (!srcTy || !dstTy || srcTy == dstTy ||
+      srcTy.getShape() != dstTy.getShape() ||
+      srcTy.getElementType() != dstTy.getElementType())
+    return {};
+  if (!dstTy.getEncoding())
+    return tlx::ReleaseLayoutOp::create(b, v.getLoc(), dstTy, v);
+  return tlx::RequireLayoutOp::create(b, v.getLoc(), dstTy, v);
+}
+
+static void reconcileOperands(mlir::Operation *terminator,
+                              mlir::TypeRange expected) {
+  mlir::OpBuilder b(terminator);
+  unsigned first = terminator->getNumOperands() - expected.size();
+  for (auto [i, type] : llvm::enumerate(expected)) {
+    mlir::OpOperand &operand = terminator->getOpOperand(first + i);
+    if (mlir::Value cast = castEncoding(b, operand.get(), type))
+      operand.set(cast);
+  }
+}
+
+void utlx::createReconcileRegionTypes(TritonOpBuilder &self,
+                                      std::vector<mlir::Value> &operands) {
+  mlir::Block *block = self.getBuilder().getInsertionBlock();
+  mlir::Operation *fn = block ? block->getParentOp() : nullptr;
+  if (fn && !mlir::isa<mlir::triton::FuncOp>(fn))
+    fn = fn->getParentOfType<mlir::triton::FuncOp>();
+  if (!fn)
+    return;
+  mlir::FunctionType fnType =
+      mlir::cast<mlir::triton::FuncOp>(fn).getFunctionType();
+  fn->walk([&](mlir::Operation *op) {
+    mlir::Operation *parent = op->getParentOp();
+    if (auto yield = mlir::dyn_cast<mlir::scf::YieldOp>(op)) {
+      if (auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(parent))
+        reconcileOperands(
+            yield, mlir::ValueRange(forOp.getRegionIterArgs()).getTypes());
+      else if (auto whileOp = mlir::dyn_cast<mlir::scf::WhileOp>(parent))
+        reconcileOperands(
+            yield, mlir::ValueRange(whileOp.getBeforeArguments()).getTypes());
+      else if (mlir::isa<mlir::scf::IfOp, mlir::scf::ExecuteRegionOp>(parent))
+        reconcileOperands(yield, parent->getResultTypes());
+    } else if (auto cond = mlir::dyn_cast<mlir::scf::ConditionOp>(op)) {
+      // getArgs() excludes the condition, which reconcileOperands skips.
+      auto whileOp = mlir::cast<mlir::scf::WhileOp>(parent);
+      reconcileOperands(
+          cond, mlir::ValueRange(whileOp.getAfterArguments()).getTypes());
+    } else if (auto ret = mlir::dyn_cast<mlir::triton::ReturnOp>(op)) {
+      reconcileOperands(ret, fnType.getResults());
+    } else if (auto call = mlir::dyn_cast<mlir::triton::CallOp>(op)) {
+      // Callees are generated, and finalised, before their first call.
+      if (auto callee =
+              mlir::SymbolTable::lookupNearestSymbolFrom<mlir::triton::FuncOp>(
+                  call, call.getCalleeAttr()))
+        reconcileOperands(call, callee.getFunctionType().getInputs());
+    }
+  });
 }

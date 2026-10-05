@@ -7,11 +7,30 @@ __all__ = [
     # async_tasks
     "async_tasks",
     "async_task",
+    # warp_pipeline
+    "warp_pipeline_stage",
+    # amd_ops (Meta-fork AMD ops on upstream Triton)
+    "buffer_load_to_local",
+    "buffer_atomic_add",
+    "assert_same_layout",
+    "extract_slice",
+    "rematerialized_range",
+    "amd_register_resident",
+    "amd_register_class_anchor",
+    "amd_scheduled_mfma",
+    "amd_mfma_commit",
+    "amd_sched_barrier",
+    "amd_iglp_opt",
+    "num_warps",
+    "warp_any",
+    "warp_predicate",
     # types
     "layout",
     "layout_encoding",
     "shared_layout_encoding",
     "swizzled_shared_layout_encoding",
+    "padded_shared_layout_encoding",
+    "shared_linear_layout_encoding",
     "tensor_memory_layout_encoding",
     "tensor_memory_scales_layout_encoding",
     "nv_mma_shared_layout_encoding",
@@ -186,6 +205,8 @@ from .types import (
     shared_layout_encoding,
     storage_kind,
     swizzled_shared_layout_encoding,
+    padded_shared_layout_encoding,
+    shared_linear_layout_encoding,
     tensor_descriptor_ptr,
     tensor_descriptor_ptr_type,
     tensor_memory_layout_encoding,
@@ -333,6 +354,13 @@ _install_make_tensor_descriptor_layout_patch()
 
 from .mxfp8_utils import _to_mxfp8_block  # noqa: E402
 from .warp_ops import vote_ballot_sync, warp_redux  # noqa: E402
+from .warp_pipeline import warp_pipeline_stage  # noqa: E402
+from .amd_ops import (  # noqa: E402
+    buffer_load_to_local, buffer_atomic_add, assert_same_layout, extract_slice,
+    rematerialized_range, amd_register_resident, amd_register_class_anchor,
+    amd_scheduled_mfma, amd_mfma_commit, amd_sched_barrier, amd_iglp_opt,
+    num_warps, warp_any, warp_predicate,
+)
 
 from . import custom_stages  # noqa: E402
 from .compiler.semantic import install_semantic  # noqa: E402
@@ -451,6 +479,137 @@ def _patch_verify_loop_carried_variable():
 
 
 _patch_verify_loop_carried_variable()
+
+
+def _patch_reconcile_region_types():
+    """Reconcile scf yields that differ from their region only in encoding.
+
+    ``require_layout`` makes a value's IR type encoded during code generation,
+    so a variable can be plain on one control-flow edge and encoded on the
+    other -- e.g. ``acc = tl.zeros(...)`` before a loop that reassigns
+    ``acc`` from a ``require_layout``'d result. Meta's fork accepts this;
+    upstream emits an ``scf.for``/``scf.if`` whose yield types mismatch and
+    fails verification. ``tt.call`` and ``tt.return`` have the same problem:
+    their signatures come from frontend types, which miss encodings a value
+    inherits from its operands (``tl.dot`` with an encoded acc). Once a
+    function's returns are finalised, the plugin casts each such operand to
+    the type its region, callee or function expects.
+    """
+    import triton.compiler.code_generator as _cg
+
+    if getattr(_cg.CodeGenerator, "_utlx_reconcile_region_types", False):
+        return
+
+    _orig_handle_returns = _cg.CodeGenerator.handle_returns
+
+    def handle_returns(self):
+        _orig_handle_returns(self)
+        # Insertion point is back inside the function, after the final return.
+        reconcile = getattr(self.builder, "utlx_reconcile_region_types", None)
+        if reconcile is not None:
+            reconcile([])
+
+    _cg.CodeGenerator.handle_returns = handle_returns
+    _cg.CodeGenerator._utlx_reconcile_region_types = True
+
+
+_patch_reconcile_region_types()
+
+
+def _patch_extern_elementwise():
+    """Keep an explicit layout across ``tl.extern_elementwise``.
+
+    The builtin types its result as ``broadcast_arg.type.with_element_ty``,
+    which rebuilds a plain ``block_type``. With encoded operands that emits a
+    ``tt.extern_elementwise`` whose result is unencoded, which fails
+    ``SameOperandsAndResultEncoding`` during layout conversion (libdevice
+    calls such as HIP's ``fast_dividef`` on a ``require_layout``'d value).
+    Like ``cast``, round-trip: release the operands, call, re-apply the layout.
+    """
+    import triton.language.core as tl_core
+
+    from .compiler.semantic import _has_layout, _promote_value
+    from .layout_ops import _require
+
+    orig = tl_core.extern_elementwise
+    if getattr(orig, "_utlx", False):
+        return
+
+    @tl_core.builtin
+    def extern_elementwise(lib_name,
+                           lib_path,
+                           args,
+                           arg_type_symbol_dict,
+                           is_pure,
+                           _semantic=None):
+        args = [_promote_value(a) for a in args]
+        carrier = next((a for a in args if _has_layout(a)), None)
+        drop = getattr(_semantic, "_drop_layout", None)
+        if carrier is not None and drop is not None:
+            args = [drop(a) for a in args]
+        out = orig(lib_name,
+                   lib_path,
+                   args,
+                   arg_type_symbol_dict,
+                   is_pure,
+                   _semantic=_semantic)
+        if (carrier is not None and drop is not None and out.type.is_block()
+                and list(out.shape) == list(carrier.shape)):
+            out = _require(_semantic, out, carrier)
+        return out
+
+    extern_elementwise._utlx = True
+    tl_core.extern_elementwise = extern_elementwise
+    import triton.language as tl_lang
+    if getattr(tl_lang, "extern_elementwise", None) is orig:
+        tl_lang.extern_elementwise = extern_elementwise
+
+
+_patch_extern_elementwise()
+
+# Loop options Meta's fork adds to ``tl.range`` for NVIDIA automatic warp
+# specialization and its modulo scheduler. They are scheduling hints with no
+# meaning on upstream Triton, so they are accepted and dropped.
+_FORK_ONLY_RANGE_OPTIONS = frozenset({
+    "data_partition_factor",
+    "multi_cta",
+    "list_schedule_pick",
+    "mem_plan_pick",
+    "merge_epilogue",
+    "merge_epilogue_to_computation",
+    "merge_correction",
+    "separate_epilogue_store",
+    "tmem_alloc_algo",
+    "smem_alloc_algo",
+    "smem_budget",
+    "smem_circular_reuse",
+})
+
+
+def _patch_range_options():
+    """Let ``tl.range`` accept the fork's extra loop options.
+
+    TLX op kernels (e.g. the HSTU reference) pass them, and upstream's
+    ``range.__init__`` raises on the unknown keywords. Patch ``__init__`` in
+    place: the code generator recognises the iterator by identity
+    (``IteratorClass is language.range``), so a subclass would not work.
+    """
+    from triton.language import core as _core
+
+    if getattr(_core.range, "_utlx_fork_options", False):
+        return
+    _orig_init = _core.range.__init__
+
+    def __init__(self, *args, **kwargs):
+        for name in _FORK_ONLY_RANGE_OPTIONS.intersection(kwargs):
+            del kwargs[name]
+        _orig_init(self, *args, **kwargs)
+
+    _core.range.__init__ = __init__
+    _core.range._utlx_fork_options = True
+
+
+_patch_range_options()
 
 
 def _make_tlx_op_builder():
@@ -577,3 +736,9 @@ _compat.install_semantic_helpers()
 from . import _ctas_per_cga as _utlx_ctas_per_cga  # noqa: E402
 
 _utlx_ctas_per_cga.install()
+
+# Accept the fork's extra AMD compile options (LLVM codegen flags and the
+# sched-group-barrier scheduler knobs) -- see _hip_options.
+from . import _hip_options as _utlx_hip_options  # noqa: E402
+
+_utlx_hip_options.install()

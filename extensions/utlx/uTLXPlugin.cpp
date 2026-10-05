@@ -9,6 +9,7 @@
 /// Exports tritonGetPluginInfo() for loading via TRITON_PLUGIN_PATHS.
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
@@ -257,6 +258,81 @@ static void createMemDescSubslice(TritonOpBuilder &self,
   auto resultType = srcType.cloneWith(shape, srcType.getElementType());
   operands[0] =
       self.create<ttg::MemDescSubsliceOp>(resultType, operands[1], offsets);
+}
+
+// --- utlx_memdesc_reinterpret: View a memdesc with a new dtype and shape ---
+//
+// Upstream's create_memdesc_reinterpret binding takes a caller-built result
+// type, but Python cannot read the source's encoding to build one. Keep the
+// source encoding, memory space and mutability here instead. The element type
+// arrives as a constant of that type, since plugin ops only take values.
+static void createMemDescReinterpret(TritonOpBuilder &self,
+                                     std::vector<mlir::Value> &operands) {
+  // operands[0]      = result slot
+  // operands[1]      = source memdesc
+  // operands[2]      = constant of the new element type
+  // operands[3 .. N] = new shape
+  if (operands.size() < 4)
+    return;
+
+  auto srcType = mlir::dyn_cast<ttg::MemDescType>(operands[1].getType());
+  if (!srcType)
+    return;
+
+  llvm::SmallVector<int64_t> shape;
+  for (size_t i = 3; i < operands.size(); ++i) {
+    auto dim = extractConstantInt(operands[i]);
+    if (!dim)
+      return;
+    shape.push_back(*dim);
+  }
+
+  auto resultType = ttg::MemDescType::get(
+      shape, operands[2].getType(), srcType.getEncoding(),
+      srcType.getMemorySpace(), srcType.getMutableMemory());
+  operands[0] = self.create<ttg::MemDescReinterpretOp>(resultType, operands[1]);
+}
+
+// --- utlx_amd_extract_slice: Static slice of an encoded register tensor ---
+//
+// Emits amdg.extract_slice, which keeps the source layout, so a slice of a
+// dot-operand tensor is still a dot operand. Built by registered name, as for
+// amdg.init_barrier in uTLXConversionPatterns.cpp: the wheel ships no AMD
+// dialect headers. Leaves the slot empty if the source has no encoding or the
+// dialect is not loaded, and the caller falls back to reshape/split.
+static void createAMDExtractSlice(TritonOpBuilder &self,
+                                  std::vector<mlir::Value> &operands) {
+  // operands[0]              = result slot
+  // operands[1]              = source tensor (must carry an encoding)
+  // operands[2 .. 2+rank)    = result shape
+  // operands[2+rank .. end)  = offsets
+  if (operands.size() < 2)
+    return;
+  auto srcType = mlir::dyn_cast<mlir::RankedTensorType>(operands[1].getType());
+  if (!srcType || !srcType.getEncoding())
+    return;
+  size_t rank = srcType.getRank();
+  if (operands.size() != 2 + 2 * rank)
+    return;
+
+  llvm::SmallVector<int64_t> shape, offsets;
+  for (size_t i = 0; i < 2 * rank; ++i) {
+    auto value = extractConstantInt(operands[2 + i]);
+    if (!value)
+      return;
+    (i < rank ? shape : offsets).push_back(*value);
+  }
+
+  auto &builder = self.getBuilder();
+  auto name = mlir::RegisteredOperationName::lookup("amdg.extract_slice",
+                                                    builder.getContext());
+  if (!name)
+    return;
+  mlir::OperationState state(self.getLastLoc(), *name);
+  state.addOperands(operands[1]);
+  state.addAttribute("static_offsets", builder.getDenseI64ArrayAttr(offsets));
+  state.addTypes(srcType.clone(shape));
+  operands[0] = builder.create(state)->getResult(0);
 }
 
 // --- utlx_tmem_load: Load a TMEM buffer into registers ---
@@ -584,6 +660,16 @@ static void createLocalAlias(TritonOpBuilder &self,
   // operands[2] = type carrier (element type)
   // operands[3..N-1] = shape dims
   // operands[N-1] = storage hint (0=smem, 1=tmem)
+  // Alternatively operands[2] is a ub.poison of the full alias memdesc type,
+  // for an explicitly requested layout, and is the only other operand.
+  if (operands.size() == 3) {
+    auto poison = operands[2].getDefiningOp<mlir::ub::PoisonOp>();
+    if (!poison || !mlir::isa<ttg::MemDescType>(poison.getType()))
+      return;
+    operands[0] = self.create<tlx::LocalAliasOp>(poison.getType(), operands[1]);
+    poison->erase();
+    return;
+  }
   if (operands.size() < 5)
     return;
 
@@ -656,7 +742,7 @@ static void createAsyncCommitGroup(TritonOpBuilder &self,
 }
 
 // --- utlx_async_wait_group: Wait for async copies with token threading ---
-// operands[0] = result slot (unused for void ops, but kept for consistency)
+// operands[0] = result slot (the wait's token)
 // operands[1] = pendings (i32 constant)
 // operands[2..N] = input async tokens (optional)
 static void createAsyncWaitGroup(TritonOpBuilder &self,
@@ -671,7 +757,8 @@ static void createAsyncWaitGroup(TritonOpBuilder &self,
   llvm::SmallVector<mlir::Value> tokens;
   for (unsigned i = 2; i < operands.size(); ++i)
     tokens.push_back(operands[i]);
-  self.create<ttg::AsyncWaitOp>(tokens, static_cast<int>(*pendingsVal));
+  operands[0] =
+      self.create<ttg::AsyncWaitOp>(tokens, static_cast<int>(*pendingsVal));
 }
 
 // --- utlx_warp_group_dot_wait: WarpGroupDotWaitOp with ReleaseLayoutOp unwrap
@@ -804,6 +891,43 @@ static void addPingPongSyncPass(mlir::PassManager *pm,
 
 static void registerPingPongSyncPassFn() { utlx::registerPingPongSyncPass(); }
 
+// --- AMD passes ---
+static void addDotOperandLocalLoadPass(mlir::PassManager *pm,
+                                       const std::vector<std::string> &) {
+  pm->addPass(utlx::createDotOperandLocalLoadPass());
+}
+
+static void registerDotOperandLocalLoadPassFn() {
+  utlx::registerDotOperandLocalLoadPass();
+}
+
+static void addKeepLoadLayoutPass(mlir::PassManager *pm,
+                                  const std::vector<std::string> &) {
+  pm->addPass(utlx::createKeepLoadLayoutPass());
+}
+
+static void registerKeepLoadLayoutPassFn() {
+  utlx::registerKeepLoadLayoutPass();
+}
+
+static void addRematDotOperandSlicesPass(mlir::PassManager *pm,
+                                         const std::vector<std::string> &) {
+  pm->addPass(utlx::createRematDotOperandSlicesPass());
+}
+
+static void registerRematDotOperandSlicesPassFn() {
+  utlx::registerRematDotOperandSlicesPass();
+}
+
+static void addFallbackAsyncCopyPass(mlir::PassManager *pm,
+                                     const std::vector<std::string> &) {
+  pm->addPass(utlx::createFallbackAsyncCopyPass());
+}
+
+static void registerFallbackAsyncCopyPassFn() {
+  utlx::registerFallbackAsyncCopyPass();
+}
+
 // --- Ported AMD passes ---
 // NOTE: AMD barrier passes are disabled until triton-tlx-core-changes patch
 // is applied. Uncomment when patched triton is available:
@@ -855,6 +979,15 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
        registerPingPongPrepPassFn},
       {"utlx_ping_pong_sync", TRITON_EXT_VERSION, addPingPongSyncPass,
        registerPingPongSyncPassFn},
+      // AMD passes
+      {"utlx_dot_operand_local_load", TRITON_EXT_VERSION,
+       addDotOperandLocalLoadPass, registerDotOperandLocalLoadPassFn},
+      {"utlx_keep_load_layout", TRITON_EXT_VERSION, addKeepLoadLayoutPass,
+       registerKeepLoadLayoutPassFn},
+      {"utlx_remat_dot_operand_slices", TRITON_EXT_VERSION,
+       addRematDotOperandSlicesPass, registerRematDotOperandSlicesPassFn},
+      {"utlx_fallback_async_copy", TRITON_EXT_VERSION, addFallbackAsyncCopyPass,
+       registerFallbackAsyncCopyPassFn},
       // Ported AMD passes (disabled until patched triton is available)
       // {"utlx_amd_lower_barrier_ops", TRITON_EXT_VERSION,
       //  addAMDLowerBarrierOpsPass, registerAMDLowerBarrierOpsPassFn},
@@ -871,6 +1004,8 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"utlx_local_view", createLocalView},
       {"utlx_tmem_subslice", createTMEMSubSlice},
       {"utlx_memdesc_subslice", createMemDescSubslice},
+      {"utlx_memdesc_reinterpret", createMemDescReinterpret},
+      {"utlx_amd_extract_slice", createAMDExtractSlice},
       {"utlx_tmem_load", createTMEMLoad},
       {"utlx_tmem_store", createTMEMStore},
       {"utlx_local_store", createLocalStore},
@@ -923,6 +1058,7 @@ TRITON_PLUGIN_API plugin::PluginInfo *tritonGetPluginInfo() {
       {"utlx_make_amd_mfma_layout", utlx::createMakeAmdMfmaLayout},
       {"utlx_make_slice_layout", utlx::createMakeSliceLayout},
       {"utlx_local_slice_typed", utlx::createLocalSlice},
+      {"utlx_reconcile_region_types", utlx::createReconcileRegionTypes},
       {"utlx_require_with_layout_carrier",
        utlx::createRequireWithLayoutCarrier},
       {"utlx_alloc_clc_responses", utlx::createAllocClcResponses},

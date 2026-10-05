@@ -13,6 +13,8 @@ import triton.language as tlang
 import triton.language.core as tl
 from triton.runtime.jit import jit
 
+from .types import _value_layout, layout_encoding
+
 
 def _uw(x):
     return tl._unwrap_if_constexpr(x)
@@ -54,9 +56,84 @@ def _require(semantic, src, layout):
     from the frontend type of the returned value, which would otherwise be an
     unencoded block_type.
     """
+    layout = _uw(layout)
     handle = semantic.builder.utlx_require_with_layout_carrier(
-        [src.handle, layout.handle])
+        [src.handle, _layout_carrier(semantic, src, layout)])
     return _carrier(handle, src.type.scalar)
+
+
+def _layout_carrier(semantic, src, layout):
+    """Return a carrier handle for ``layout``, as required for ``src``.
+
+    Layouts built by the ops in this module are already carriers. Encoding
+    objects such as ``tlx.layout`` (shape/stride) are attributes instead; give
+    them a poison value of the encoded type, as only its type is ever read.
+    """
+    if not isinstance(layout, layout_encoding):
+        return layout.handle
+    b = semantic.builder
+    shape = [int(d) for d in src.shape]
+    try:
+        enc = layout.to_ir(b, shape, src.dtype)
+    except TypeError:
+        enc = layout.to_ir(b)
+    return b.create_poison(b.get_distributed_ty(src.dtype.to_ir(b), shape,
+                                                enc))
+
+
+class _register_layout(_value_layout, layout_encoding):
+    """A register layout kept as a description until an op applies it.
+
+    The fork's layouts are attributes. As carrier values instead, every layout
+    a kernel defines lands in the IR whether used or not, and the module
+    verifier rejects one whose warp count does not match the kernel's -- e.g.
+    the 4-warp variant a kernel defines next to the 8-warp one a config picks.
+    These lower through :func:`_layout_carrier` only when applied, and are
+    constexprs, so they cross @triton.jit calls as the fork's do.
+    """
+
+    def to_ir(self, builder, *_):
+        # The extra arguments are the shape and dtype _layout_carrier offers
+        # layouts that depend on them; register layouts do not.
+        raise NotImplementedError
+
+
+class amd_mfma_layout_encoding(_register_layout):
+
+    def __init__(self, version, instr_shape, transposed, warps_per_cta):
+        self.version = version
+        self.instr_shape = list(instr_shape)
+        self.transposed = transposed
+        self.warps_per_cta = list(warps_per_cta)
+
+    def to_ir(self, builder, *_):
+        rank = len(self.warps_per_cta)
+        return builder.get_amd_mfma_layout(self.version, self.warps_per_cta,
+                                           self.instr_shape, self.transposed,
+                                           [], [1] * rank, 32)
+
+
+class dot_operand_layout_encoding(_register_layout):
+
+    def __init__(self, op_idx, parent, k_width):
+        self.op_idx = op_idx
+        self.parent = parent
+        self.k_width = k_width
+
+    def to_ir(self, builder, *_):
+        return builder.get_dot_operand_layout(self.op_idx,
+                                              self.parent.to_ir(builder),
+                                              self.k_width)
+
+
+class slice_layout_encoding(_register_layout):
+
+    def __init__(self, parent, dim):
+        self.parent = parent
+        self.dim = dim
+
+    def to_ir(self, builder, *_):
+        return builder.get_slice_layout(self.dim, self.parent.to_ir(builder))
 
 
 @tl.builtin
@@ -71,11 +148,12 @@ def amd_mfma_layout(version,
         version: MFMA instruction version (e.g. 4 for gfx950).
         instr_shape: [M, N, K] of the MFMA instruction, e.g. [16, 16, 32].
         transposed: whether the MFMA result is stored transposed.
-        warps_per_cta: warp grid, e.g. [4, 1]. Defaults to [num_warps, 1].
+        warps_per_cta: warp grid, e.g. [4, 1], or [B, M, N] for a batched
+            (rank-3) layout. Defaults to [num_warps, 1].
     """
     version = _uw(version)
     transposed = _uw(transposed)
-    instr_shape = [_uw(v) for v in instr_shape]
+    instr_shape = [_uw(v) for v in _uw(instr_shape)]
     if len(instr_shape) != 3:
         raise ValueError(
             f"instr_shape must be [M, N, K]; got {len(instr_shape)} entries")
@@ -83,17 +161,14 @@ def amd_mfma_layout(version,
     if warps_per_cta is None:
         warps_per_cta = [_semantic.builder.options.num_warps, 1]
     else:
-        warps_per_cta = [_uw(v) for v in warps_per_cta]
-    if len(warps_per_cta) != 2:
-        raise ValueError(
-            f"warps_per_cta must have 2 entries; got {len(warps_per_cta)}")
+        warps_per_cta = [_uw(v) for v in _uw(warps_per_cta)]
+    if len(warps_per_cta) not in (2, 3):
+        raise ValueError("warps_per_cta must have 2 entries (or 3 with a "
+                         f"leading batch dim); got {len(warps_per_cta)}")
 
-    b = _semantic.builder
-    args = [b.get_int32(int(version))]
-    args += [b.get_int32(int(v)) for v in instr_shape]
-    args.append(b.get_int32(1 if transposed else 0))
-    args += [b.get_int32(int(v)) for v in warps_per_cta]
-    return _carrier(b.utlx_make_amd_mfma_layout(args))
+    return tl.constexpr(
+        amd_mfma_layout_encoding(int(version), instr_shape, bool(transposed),
+                                 warps_per_cta))
 
 
 @tl.builtin
@@ -105,6 +180,13 @@ def dot_operand_layout(op_idx, parent, k_width=None, _semantic=None):
     """
     op_idx = _uw(op_idx)
     k_width = _uw(k_width)
+    parent = _uw(parent)
+    if isinstance(parent, _register_layout):
+        if not k_width:
+            raise ValueError("dot_operand_layout of an AMD MFMA layout needs "
+                             "k_width")
+        return tl.constexpr(
+            dot_operand_layout_encoding(int(op_idx), parent, int(k_width)))
     b = _semantic.builder
     args = [
         parent.handle,
@@ -118,6 +200,9 @@ def dot_operand_layout(op_idx, parent, k_width=None, _semantic=None):
 def slice_layout(parent, dim, _semantic=None):
     """Layout of ``parent`` with dimension ``dim`` sliced away."""
     dim = _uw(dim)
+    parent = _uw(parent)
+    if isinstance(parent, _register_layout):
+        return tl.constexpr(slice_layout_encoding(parent, int(dim)))
     b = _semantic.builder
     return _carrier(
         b.utlx_make_slice_layout([parent.handle,
@@ -125,22 +210,34 @@ def slice_layout(parent, dim, _semantic=None):
 
 
 @tl.builtin
-def require_layout(src, layout, pin=False, _semantic=None):
+def require_layout(src,
+                   layout,
+                   pin=False,
+                   late_address_compute=False,
+                   _semantic=None):
     """Require that ``src`` be materialised in ``layout``.
 
-    ``pin`` is accepted for source compatibility and currently ignored:
-    tlx.require_layout has no pin attribute to forward it to.
+    ``pin`` and ``late_address_compute`` are accepted for source compatibility
+    and currently ignored: tlx.require_layout has no attributes to forward
+    them to. Neither changes the values produced.
     """
     return _require(_semantic, src, layout)
 
 
 @tl.builtin
-def release_layout(src, _semantic=None):
+def release_layout(src, relaxed=False, _semantic=None):
     """Drop an explicit layout, returning ``src`` with a default encoding.
 
     Passes through anything that is not an IR tensor (constexprs, scalars) so it
     can be applied unconditionally in helpers that accept either.
+
+    ``relaxed`` is accepted for fork compatibility. There it lets layout
+    optimization remove the release; here every release lowers to a plain
+    convert_layout that later passes may fold anyway, so it has no effect.
     """
+    relaxed = tl._unwrap_if_constexpr(relaxed)
+    assert isinstance(relaxed, bool), (
+        f"relaxed must be a constexpr bool, got {type(relaxed).__name__}")
     if not isinstance(src, tl.tensor):
         return src
     handle = _semantic.builder.utlx_release_layout([src.handle])
@@ -206,20 +303,78 @@ def swizzled_layout(vector_size,
 # work unchanged on non-AMD targets.
 
 
+@tl.builtin
+def _load_keeping_layout(ptr, mask, other, cache, _semantic=None):
+    """tt.load whose result keeps ``ptr``'s register layout.
+
+    The semantic's load shim strips pointer layouts. buffer_load offsets are
+    laid out on purpose, though -- often in a dot operand layout so the values
+    reach MFMA registers without a conversion through LDS -- and Meta's fork
+    loads straight into that layout. Do the same, giving ``mask`` and
+    ``other`` the pointer's layout since tt.load requires all three to agree.
+    """
+    from .compiler.semantic import UTLXSemantic, _has_layout, _promote_value
+    cache = _uw(cache) or ""
+    ptr = _promote_value(ptr)
+    if not _has_layout(ptr):
+        # As tl.load: mask and other may be constexprs or Python scalars.
+        mask, other = _uw(mask), _uw(other)
+        mask = None if mask is None else _semantic.to_tensor(mask)
+        other = None if other is None else _semantic.to_tensor(other)
+        return _semantic.load(ptr, mask, other, (), "", cache, "", False)
+
+    def like_ptr(v):
+        v = _uw(v)
+        if v is None:
+            return None
+        v = _semantic.to_tensor(v)
+        if not v.type.is_block():
+            v = _semantic.splat(v, list(ptr.type.shape))
+        return v if _has_layout(v) else _require(_semantic, v, ptr)
+
+    out = super(UTLXSemantic, _semantic).load(ptr, like_ptr(mask),
+                                              like_ptr(other), (), "", cache,
+                                              "", False)
+    # Coalesce would re-lay the tensor-of-pointer load out; the
+    # utlx_keep_load_layout pass restores this layout afterwards.
+    out.handle.set_attr("utlx.keep_layout", _semantic.builder.get_unit_attr())
+    return out
+
+
 @jit
-def buffer_load(base, offsets, mask=None, other=None):
+def buffer_load(base,
+                offsets,
+                mask=None,
+                other=None,
+                cache: tl.constexpr = None,
+                contiguity: tl.constexpr = 1):
     """Load ``base[offsets]``; the AMD backend lowers this to a buffer load.
 
-    Layouts are stripped from the pointer operands by the load/store shim, so
-    nothing to do here beyond the address arithmetic.
+    The result has the layout of ``offsets``, if they carry one.
+
+    ``contiguity`` is the fork's trusted vector-width promise. It is accepted
+    and checked but not forwarded: the backend's own axis analysis picks the
+    width here, which can only be narrower, never wrong.
     """
-    return tlang.load(base + offsets, mask=mask, other=other)
+    tlang.static_assert(
+        contiguity > 0 and (contiguity & (contiguity - 1)) == 0,
+        "contiguity must be a positive power of two")
+    return _load_keeping_layout(base + offsets, mask, other, cache)
 
 
 @jit
-def buffer_store(value, base, offsets, mask=None):
+def buffer_store(value,
+                 base,
+                 offsets,
+                 mask=None,
+                 cache: tl.constexpr = None,
+                 contiguity: tl.constexpr = 1):
     """Store ``value`` to ``base[offsets]`` as a buffer store.
 
-    Layouts are stripped by the load/store shim, as for buffer_load.
+    Layouts are stripped from the operands by the store shim, and
+    ``contiguity`` is accepted but not forwarded, as for buffer_load.
     """
-    tlang.store(base + offsets, value, mask=mask)
+    tlang.static_assert(
+        contiguity > 0 and (contiguity & (contiguity - 1)) == 0,
+        "contiguity must be a positive power of two")
+    tlang.store(base + offsets, value, mask=mask, cache_modifier=cache)

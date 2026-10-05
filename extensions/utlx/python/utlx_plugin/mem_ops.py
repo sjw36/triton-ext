@@ -156,11 +156,18 @@ def local_alloc(
     # If reuse is a buffered_tensor, use local_alias (share memory with existing buffer)
     if reuse is not None and isinstance(reuse, tlx.buffered_tensor):
         return _local_alloc_with_alias(_semantic, reuse, dtype, full_shape,
-                                       unwrapped_shape, unwrapped_num, storage)
+                                       unwrapped_shape, unwrapped_num, storage,
+                                       tl._unwrap_if_constexpr(layout))
 
     if storage == tlx.storage_kind.tmem:
         return _local_alloc_tmem(_semantic, dtype, full_shape, unwrapped_shape,
                                  unwrapped_num)
+
+    layout = tl._unwrap_if_constexpr(layout)
+    if isinstance(layout, (tlx.padded_shared_layout_encoding,
+                           tlx.shared_linear_layout_encoding)):
+        return _local_alloc_pinned(_semantic, dtype, full_shape,
+                                   unwrapped_shape, unwrapped_num, layout)
 
     type_carrier = _make_type_carrier(_semantic.builder, dtype)
     shape_values = [
@@ -181,6 +188,27 @@ def local_alloc(
 
     return tlx.buffered_tensor(tensor_handle, dtype, unwrapped_shape,
                                unwrapped_num, storage, py_layout)
+
+
+def _local_alloc_pinned(semantic, dtype, full_shape, unwrapped_shape,
+                        unwrapped_num, layout):
+    """Allocate SMEM with an explicit padded/shared-linear encoding.
+
+    Other ``layout=`` values are ignored and the layout pass picks the
+    encoding from the consumers. These two describe a physical image the
+    kernel was written against (and that the AMD async copies are sized for),
+    so the encoding goes on the alloc as given and the layout pass leaves it
+    alone. The encoding may cover only the per-buffer dims; the leading
+    ``num`` dim is the multi-buffering dim upstream's verifier accepts.
+    """
+    builder = semantic.builder
+    mem_desc_ty = builder.get_shared_mem_desc_ty(dtype.to_ir(builder),
+                                                 full_shape,
+                                                 layout.to_ir(builder),
+                                                 full_shape)
+    tensor_handle = builder.create_local_alloc(mem_desc_ty)
+    return tlx.buffered_tensor(tensor_handle, dtype, unwrapped_shape,
+                               unwrapped_num, tlx.storage_kind.smem, layout)
 
 
 def _local_alloc_with_storage_alias(semantic, spec, dtype, full_shape,
@@ -234,13 +262,37 @@ def _local_alloc_tmem(semantic, dtype, full_shape, unwrapped_shape,
                                unwrapped_num, storage_kind.tmem, py_layout)
 
 
-def _local_alloc_with_alias(semantic, reuse_tensor, dtype, full_shape,
-                            unwrapped_shape, unwrapped_num, storage):
-    """Allocate via utlx_local_alias (share memory with existing buffered_tensor)."""
+def _local_alloc_with_alias(semantic,
+                            reuse_tensor,
+                            dtype,
+                            full_shape,
+                            unwrapped_shape,
+                            unwrapped_num,
+                            storage,
+                            layout=None):
+    """Allocate via utlx_local_alias (share memory with existing buffered_tensor).
+
+    The alias takes the encoding of ``reuse_tensor`` unless ``layout`` is a
+    pinned encoding (see :func:`_local_alloc_pinned`). Those are tied to a
+    shape, so the source's would not fit an alias of a different shape.
+    """
     if reuse_tensor.type.storage != storage:
         raise ValueError(
             f"reuse tensor has storage {reuse_tensor.type.storage} but "
             f"allocation requests {storage}")
+    if storage == storage_kind.smem and isinstance(
+            layout, (tlx.padded_shared_layout_encoding,
+                     tlx.shared_linear_layout_encoding)):
+        builder = semantic.builder
+        mem_desc_ty = builder.get_shared_mem_desc_ty(dtype.to_ir(builder),
+                                                     full_shape,
+                                                     layout.to_ir(builder),
+                                                     full_shape)
+        carrier = builder.create_poison(mem_desc_ty)
+        tensor_handle = builder.utlx_local_alias(
+            [reuse_tensor.handle, carrier])
+        return tlx.buffered_tensor(tensor_handle, dtype, unwrapped_shape,
+                                   unwrapped_num, storage, layout)
     type_carrier = _make_type_carrier(semantic.builder, dtype)
     shape_values = [semantic.builder.get_int32(int(dim)) for dim in full_shape]
     is_tmem = storage == storage_kind.tmem
@@ -467,9 +519,21 @@ def local_reinterpret(
     src: tlx.buffered_tensor,
     dtype: tl.dtype,
     shape=None,
+    layout=None,
+    pin=True,
     _semantic=None,
 ) -> tlx.buffered_tensor:
-    """Reinterpret the dtype and shape of a buffered tensor."""
+    """Reinterpret the dtype and shape of a buffered tensor.
+
+    With ``layout`` the view also takes that explicit shared-memory layout, as
+    in fork TLX. ``pin`` is accepted for compatibility: explicit shared layouts
+    are always kept as given here. Without ``layout`` the source layout is
+    preserved.
+    """
+    layout = tl._unwrap_if_constexpr(layout)
+    pin = tl._unwrap_if_constexpr(pin)
+    assert isinstance(
+        pin, bool), (f"pin must be a constexpr bool, got {type(pin).__name__}")
     if shape is None:
         shape = src.type.shape
     else:
@@ -477,11 +541,24 @@ def local_reinterpret(
             src, tlx.buffered_tensor
         ) and src.type.storage == tlx.storage_kind.smem, (
             "TLX local_reinterpret with reshaping only supports SMEM")
+    shape = [int(tl._unwrap_if_constexpr(d)) for d in shape]
 
-    reinterpreted_value_handle = _semantic.builder.create_memdesc_reinterpret(
-        src.handle, dtype.to_ir(_semantic.builder), shape)
-    return tlx.buffered_tensor(reinterpreted_value_handle, dtype, shape,
-                               src.type.num, src.type.storage, src.type.layout)
+    b = _semantic.builder
+    if layout is not None:
+        assert (src.type.storage == tlx.storage_kind.smem
+                and isinstance(layout, tlx.shared_layout_encoding)), (
+                    "TLX local_reinterpret only supports explicit "
+                    "shared-memory layouts")
+        ty = b.get_shared_mem_desc_ty(dtype.to_ir(b), shape, layout.to_ir(b),
+                                      shape)
+        handle = b.create_memdesc_reinterpret(ty, src.handle)
+    else:
+        handle = b.utlx_memdesc_reinterpret(
+            [src.handle, b.get_null_value(dtype.to_ir(b))] +
+            [b.get_int32(d) for d in shape])
+        layout = src.type.layout
+    return tlx.buffered_tensor(handle, dtype, shape, src.type.num,
+                               src.type.storage, layout)
 
 
 @tl.builtin
@@ -593,8 +670,8 @@ def async_load_wait_group(
         t.handle for t in tokens if t is not None and t.handle is not None
     ]
     args = [_semantic.builder.get_int32(pendings)] + handles
-    _semantic.builder.utlx_async_wait_group(args)
-    return tlx.async_token(None)
+    token = _semantic.builder.utlx_async_wait_group(args)
+    return tlx.async_token(checked_handle(token, "async_load_wait_group"))
 
 
 @tl.builtin
@@ -602,6 +679,9 @@ def local_load(
     src: tlx.buffered_tensor,
     token: Optional[tlx.async_token] = None,
     layout=None,
+    relaxed=False,
+    rematerialize_coordinates=False,
+    rematerialize_coordinates_group=None,
     _semantic=None,
 ) -> tl.tensor:
     """Load from SMEM/TMEM buffer into a register tensor.
@@ -609,6 +689,12 @@ def local_load(
     ``layout`` optionally names the register layout the result should land in
     (a carrier from e.g. ``amd_mfma_layout`` / ``dot_operand_layout``), matching
     the ``layout=`` that ``local_alloc`` already accepts.
+
+    ``relaxed`` and ``rematerialize_coordinates(_group)`` are Meta-fork AMD
+    lowering hints (skip the redundant async-copy dependency/wait count after
+    an explicit wait; recompute LDS addresses at the load). They are accepted
+    and ignored: the load keeps upstream's conservative wait tracking and
+    addressing, which yields the same values.
     """
     block_type = tl.block_type(src.type.element_ty, src.type.shape)
     storage = src.type.storage

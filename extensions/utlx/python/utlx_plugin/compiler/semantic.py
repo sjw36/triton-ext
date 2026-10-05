@@ -58,6 +58,15 @@ def _promote(handle, type):
     return _carrier_type(type.scalar, type.shape, ir_ty)
 
 
+def _promote_value(v):
+    """``v`` with its type promoted as by :func:`_promote`."""
+    if isinstance(v, tl.tensor) and not _has_layout(v):
+        ty = _promote(v.handle, v.type)
+        if ty is not v.type:
+            return tl.tensor(v.handle, ty)
+    return v
+
+
 #: Whether this Triton routes result construction through an overridable
 #: factory. Without it the same promotion has to be patched onto tl.tensor:
 #: the `tensor` attribute is not usable for this because `to_tensor` also tests
@@ -110,7 +119,7 @@ class UTLXSemantic(_BaseSemantic[_TensorTy], Generic[_TensorTy]):
         unencoded splat.
         """
         lhs, rhs = super().binary_op_type_checking_impl(
-            lhs, rhs, *args, **kwargs)
+            _promote_value(lhs), _promote_value(rhs), *args, **kwargs)
         lhs_c, rhs_c = _has_layout(lhs), _has_layout(rhs)
         if lhs_c == rhs_c:
             return lhs, rhs
@@ -126,6 +135,8 @@ class UTLXSemantic(_BaseSemantic[_TensorTy], Generic[_TensorTy]):
 
     def where(self, condition, x, y):
         """``arith.select`` requires condition, both arms and result to agree."""
+        condition, x, y = (_promote_value(condition), _promote_value(x),
+                           _promote_value(y))
         carrier = next((v for v in (x, y, condition) if _has_layout(v)), None)
         if carrier is not None:
             shape = list(carrier.type.shape)
@@ -137,6 +148,10 @@ class UTLXSemantic(_BaseSemantic[_TensorTy], Generic[_TensorTy]):
                     return _require(self, v, carrier)
                 return v
 
+            # A scalar condition would be splatted without the layout.
+            condition = self.to_tensor(condition)
+            if not condition.type.is_block():
+                condition = self.splat(condition, shape)
             condition, x, y = fix(condition), fix(x), fix(y)
         return super().where(condition, x, y)
 
@@ -159,6 +174,13 @@ class UTLXSemantic(_BaseSemantic[_TensorTy], Generic[_TensorTy]):
         """As :meth:`load`; tt.store requires value and pointer to agree."""
         return super().store(self._drop_layout(ptr), self._drop_layout(val),
                              self._drop_layout(mask), *args, **kwargs)
+
+    def atom_red_typechecking_impl(self, ptr, val, mask, op):
+        """As :meth:`store`; the default mask is built plain, so an encoded
+        pointer or value would disagree with it."""
+        ptr, val, mask = super().atom_red_typechecking_impl(ptr, val, mask, op)
+        return (self._drop_layout(ptr), self._drop_layout(val),
+                self._drop_layout(mask))
 
 
 def _install_tensor_patch():
