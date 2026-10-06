@@ -87,3 +87,75 @@ tt.func @if_same(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %N: i32) {
   }
   tt.return
 }
+
+// max(N + 4, N) differs by the positive constant 4, so the bound is N + 4.
+// CHECK-LABEL: tt.func @max_affine_pos(
+// CHECK-SAME:  %arg1: !tt.ptr<f32> {tai.load_bytes = "max(args[2] * 1024 + 4096, 0)"}
+tt.func @max_affine_pos(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %N: i32) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c4 = arith.constant 4 : i32
+  %n4 = arith.addi %N, %c4 : i32
+  %bound = arith.maxsi %n4, %N : i32
+  %off = tt.make_range {start = 0 : i32, end = 256 : i32} : tensor<256xi32>
+  %inb = tt.splat %in : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+  %inp = tt.addptr %inb, %off : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+  scf.for %i = %c0 to %bound step %c1 : i32 {
+    %v = tt.load %inp : tensor<256x!tt.ptr<f32>>
+  }
+  tt.return
+}
+
+// max(N, N + 4) differs by the negative constant -4, so the bound is N + 4.
+// CHECK-LABEL: tt.func @max_affine_neg(
+// CHECK-SAME:  %arg1: !tt.ptr<f32> {tai.load_bytes = "max(args[2] * 1024 + 4096, 0)"}
+tt.func @max_affine_neg(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %N: i32) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c4 = arith.constant 4 : i32
+  %n4 = arith.addi %N, %c4 : i32
+  %bound = arith.maxsi %N, %n4 : i32
+  %off = tt.make_range {start = 0 : i32, end = 256 : i32} : tensor<256xi32>
+  %inb = tt.splat %in : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+  %inp = tt.addptr %inb, %off : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+  scf.for %i = %c0 to %bound step %c1 : i32 {
+    %v = tt.load %inp : tensor<256x!tt.ptr<f32>>
+  }
+  tt.return
+}
+
+// min(N + 4, N) differs by the positive constant 4, so the bound is N.
+// CHECK-LABEL: tt.func @min_affine_pos(
+// CHECK-SAME:  %arg1: !tt.ptr<f32> {tai.load_bytes = "max(args[2] * 1024, 0)"}
+tt.func @min_affine_pos(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %N: i32) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c4 = arith.constant 4 : i32
+  %n4 = arith.addi %N, %c4 : i32
+  %bound = arith.minsi %n4, %N : i32
+  %off = tt.make_range {start = 0 : i32, end = 256 : i32} : tensor<256xi32>
+  %inb = tt.splat %in : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+  %inp = tt.addptr %inb, %off : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+  scf.for %i = %c0 to %bound step %c1 : i32 {
+    %v = tt.load %inp : tensor<256x!tt.ptr<f32>>
+  }
+  tt.return
+}
+
+// min(N, N + 4) differs by the negative constant -4, so the bound is N.
+// CHECK-LABEL: tt.func @min_affine_neg(
+// CHECK-SAME:  %arg1: !tt.ptr<f32> {tai.load_bytes = "max(args[2] * 1024, 0)"}
+tt.func @min_affine_neg(%out: !tt.ptr<f32>, %in: !tt.ptr<f32>, %N: i32) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %c4 = arith.constant 4 : i32
+  %n4 = arith.addi %N, %c4 : i32
+  %bound = arith.minsi %N, %n4 : i32
+  %off = tt.make_range {start = 0 : i32, end = 256 : i32} : tensor<256xi32>
+  %inb = tt.splat %in : !tt.ptr<f32> -> tensor<256x!tt.ptr<f32>>
+  %inp = tt.addptr %inb, %off : tensor<256x!tt.ptr<f32>>, tensor<256xi32>
+  scf.for %i = %c0 to %bound step %c1 : i32 {
+    %v = tt.load %inp : tensor<256x!tt.ptr<f32>>
+  }
+  tt.return
+}

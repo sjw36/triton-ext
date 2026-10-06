@@ -19,6 +19,9 @@
 // Identities applied at construction time:
 //   - `min(e, e) = e`, and likewise for `max`.
 //   - `min` / `max` of two constants fold.
+//   - When `a` and `b` are affine and `a - b` is a constant: a positive
+//     difference selects `a` for `max` and `b` for `min`; a negative
+//     difference selects the other side. Zero means the sides are equal.
 //   - `min(x, min(x, y)) = min(x, y)`, `min(x, max(x, y)) = x`, and the
 //     `max` duals.
 //   - `+` and `-` distribute over `min` / `max`. Subtracting a `min`
@@ -177,6 +180,7 @@ private:
   void printRec(llvm::raw_ostream &os, Tightness enclosing) const;
   void printAffine(llvm::raw_ostream &os, mlir::AffineExpr expr,
                    Tightness enclosing) const;
+  void dump() const;
   static const char *spelling(Kind kind);
 
   const Node *node = nullptr;
@@ -233,6 +237,29 @@ inline SymExpr SymExpr::foldBound(Kind kind, SymExpr lhs, SymExpr rhs) {
       int64_t folded =
           kind == Kind::Min ? std::min(*cl, *cr) : std::max(*cl, *cr);
       return lhs.ctx()->getConstant(folded);
+    }
+  }
+
+  // When both sides are affine and `a - b` simplifies to a constant, that
+  // sign picks the winner: a positive difference is `a` for `max` and `b`
+  // for `min`; a negative difference is the other side. Zero means the
+  // sides are equal. Local affine folding does not cancel `a - (a + c)`,
+  // so simplify the difference before reading the constant.
+  if (lhs.isAffine() && rhs.isAffine()) {
+    SymExpr diff = lhs - rhs;
+    unsigned numDims = 0, numSyms = 0;
+    diff.affine().walk([&](mlir::AffineExpr e) {
+      if (auto dim = mlir::dyn_cast<mlir::AffineDimExpr>(e))
+        numDims = std::max(numDims, dim.getPosition() + 1);
+      else if (auto sym = mlir::dyn_cast<mlir::AffineSymbolExpr>(e))
+        numSyms = std::max(numSyms, sym.getPosition() + 1);
+    });
+    mlir::AffineExpr simplified =
+        mlir::simplifyAffineExpr(diff.affine(), numDims, numSyms);
+    if (auto cst = mlir::dyn_cast<mlir::AffineConstantExpr>(simplified)) {
+      bool lhsWins =
+          kind == Kind::Max ? cst.getValue() >= 0 : cst.getValue() <= 0;
+      return lhsWins ? lhs : rhs;
     }
   }
   // `min(x, min(x, y)) = min(x, y)` and `min(x, max(x, y)) = x`.
@@ -604,6 +631,11 @@ inline void SymExpr::print(llvm::raw_ostream &os) const {
     return;
   }
   printRec(os, Tightness::Weak);
+}
+
+void SymExpr::dump() const {
+  print(llvm::errs());
+  llvm::errs() << '\n';
 }
 
 inline llvm::raw_ostream &operator<<(llvm::raw_ostream &os, SymExpr expr) {

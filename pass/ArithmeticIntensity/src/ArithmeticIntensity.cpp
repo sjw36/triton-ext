@@ -600,6 +600,7 @@ class ArithmeticIntensityAnalysisDriver {
 
   // Multiply the per-execution `size` of `op` by the symbolic trip count of
   // every enclosing `scf.for`, up to function scope.
+  // TODO: calculate once for each block parent, this should be a lookup
   SymExpr scaleByTripCount(Operation *op, SymExpr size) {
     auto parentOp = op->getParentOp();
     if (isa<FunctionOpInterface>(parentOp))
@@ -669,7 +670,7 @@ public:
   ArithmeticIntensityAnalysisDriver(triton::FuncOp func)
       : func(func), syms(func), loadBytesMetrics(func.getNumArguments()),
         storeBytesMetrics(func.getNumArguments()),
-        computeMetrics(func.getNumArguments()) {}
+        computeMetrics(func.getNumArguments()) { run(); }
 
   void run() {
     func.walk<WalkOrder::PostOrder>(
@@ -777,7 +778,6 @@ struct ArithmeticIntensityPass
   void runOnOperation() override {
     for (auto func : getOperation().getOps<triton::FuncOp>()) {
       ArithmeticIntensityAnalysisDriver driver(func);
-      driver.run();
       auto setAttr = [&](unsigned i, StringRef name,
                          const std::optional<std::string> &value) {
         if (value)
