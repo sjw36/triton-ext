@@ -670,7 +670,9 @@ public:
   ArithmeticIntensityAnalysisDriver(triton::FuncOp func)
       : func(func), syms(func), loadBytesMetrics(func.getNumArguments()),
         storeBytesMetrics(func.getNumArguments()),
-        computeMetrics(func.getNumArguments()) { run(); }
+        computeMetrics(func.getNumArguments()) {
+    run();
+  }
 
   void run() {
     func.walk<WalkOrder::PostOrder>(
