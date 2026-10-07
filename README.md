@@ -39,7 +39,7 @@ Extensions live in subdirectories, each built as a separate Triton wheel:
 - **[`dialect/`](./dialect/)**: For adding MLIR dialects to Triton.
 
 - **[`pass/`](./pass/)**: For adding MLIR passes to Triton (e.g.,
-  [`arithmetic-intensity`][arithmetic-intensity]).
+  [`intensity`][intensity]).
 
 - **[`extensions/`](./extensions/)**: For extensions that bundle dialects,
   passes, and language bindings together (e.g., [`utlx`][utlx]).
@@ -137,7 +137,7 @@ import triton-<extension>
 ...
 ```
 
-[arithmetic-intensity]: ./pass/ArithmeticIntensity/
+[intensity]: ./pass/Intensity/
 [build-llvm]: ./.github/actions/build-llvm/action.yml
 [download_llvm]: ./ci/download_llvm.py
 [download_triton]: ./ci/download_triton_wheel.py
