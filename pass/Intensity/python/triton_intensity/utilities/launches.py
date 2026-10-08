@@ -105,8 +105,7 @@ class KernelLaunch:
         """Launch arguments bound to parameter names (plus folded ones)."""
         return self.equations().bind_launch_args(*self.args, **self.kwargs)
 
-    def work(self,
-             max_programs: int = _DEFAULT_MAX_PROGRAMS) -> Intensity:
+    def work(self, max_programs: int = _DEFAULT_MAX_PROGRAMS) -> Intensity:
         """Evaluate the equations for this launch's grid and arguments."""
         return self.equations().evaluate(self.grid,
                                          *self.args,
@@ -219,8 +218,7 @@ class Work:
     load_bytes: int = 0
     store_bytes: int = 0
     num_programs: int = 0
-    per_launch: List[Tuple[str,
-                           Intensity]] = field(default_factory=list)
+    per_launch: List[Tuple[str, Intensity]] = field(default_factory=list)
 
     @classmethod
     def of(cls,

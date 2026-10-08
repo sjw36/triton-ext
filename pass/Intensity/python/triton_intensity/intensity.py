@@ -312,10 +312,9 @@ class IntensityEquations:
     # -- construction -------------------------------------------------------
 
     @classmethod
-    def from_metadata(
-            cls,
-            metadata: Mapping[str, Any],
-            src: Any = None) -> Optional[IntensityEquations]:
+    def from_metadata(cls,
+                      metadata: Mapping[str, Any],
+                      src: Any = None) -> Optional[IntensityEquations]:
         """Build from compilation ``metadata`` (and its ``ASTSource``).
 
         Returns ``None`` when the metadata carries no intensity
@@ -522,11 +521,11 @@ class IntensityEquations:
             total_store += arg_store
             total_flops += arg_flops
         return Intensity(flops=total_flops,
-                                   bytes=total_load + total_store,
-                                   grid=grid3,
-                                   load_bytes=total_load,
-                                   store_bytes=total_store,
-                                   per_arg=per_arg)
+                         bytes=total_load + total_store,
+                         grid=grid3,
+                         load_bytes=total_load,
+                         store_bytes=total_store,
+                         per_arg=per_arg)
 
 
 def intensity(

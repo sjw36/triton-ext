@@ -1193,8 +1193,8 @@ def main() -> None:
         for k, v in row.items() if k not in ("launch", "M", "N")
     } for row in rows])
     print("\n" + df.to_string(index=False, float_format=lambda f: f"{f:.3f}"))
-    stem = "persistent-matmul-intensity" + ("-fp8" if args.prec
-                                                       == "fp8" else "")
+    stem = "persistent-matmul-intensity" + ("-fp8"
+                                            if args.prec == "fp8" else "")
     csv_path = os.path.join(args.save_path, stem + ".csv")
     df.to_csv(csv_path, index=False)
     print(f"Saved data to {csv_path}")

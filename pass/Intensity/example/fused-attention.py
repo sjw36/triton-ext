@@ -1011,9 +1011,7 @@ def plot(rows: List[Dict[str, Any]], path: str) -> None:
                      style,
                      marker="o",
                      label=label)
-    titles = [
-        "Intensity (FLOP/byte)", "Achieved TFLOP/s", "Achieved GB/s"
-    ]
+    titles = ["Intensity (FLOP/byte)", "Achieved TFLOP/s", "Achieved GB/s"]
     for ax, title in zip(axes, titles):
         ax.set_xscale("log", base=2)
         ax.set_xlabel("N_CTX")
@@ -1023,8 +1021,7 @@ def plot(rows: List[Dict[str, Any]], path: str) -> None:
     axes[2].legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=8)
     device = torch.cuda.get_device_name(DEVICE) if is_cuda() else str(DEVICE)
     fig.suptitle(
-        f"Fused attention (fp16), work from triton-intensity -- {device}"
-    )
+        f"Fused attention (fp16), work from triton-intensity -- {device}")
     fig.tight_layout()
     fig.savefig(path, dpi=120, bbox_inches="tight")
     print(f"\nSaved plot to {path}")
@@ -1088,14 +1085,10 @@ def main() -> None:
         for k, v in row.items() if k != "kernels"
     } for row in rows])
     print("\n" + df.to_string(index=False, float_format=lambda f: f"{f:.3f}"))
-    csv_path = os.path.join(args.save_path,
-                            "fused-attention-intensity.csv")
+    csv_path = os.path.join(args.save_path, "fused-attention-intensity.csv")
     df.to_csv(csv_path, index=False)
     print(f"Saved data to {csv_path}")
-    plot(
-        rows,
-        os.path.join(args.save_path,
-                     "fused-attention-intensity.png"))
+    plot(rows, os.path.join(args.save_path, "fused-attention-intensity.png"))
 
 
 if __name__ == "__main__":

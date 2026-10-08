@@ -643,8 +643,7 @@ def print_equations(launch: tint.ConfigLaunch) -> None:
     # The listener gathered the same kernel function as it was compiled.
     assert launch.name in LISTENER, f"listener did not see {launch.name}"
     print()
-    tint.print_equations(launch,
-                        title="Intensity equations (per program):")
+    tint.print_equations(launch, title="Intensity equations (per program):")
 
 
 def plot(rows: List[Dict[str, Any]], path: str, fp8: bool) -> None:
@@ -832,8 +831,7 @@ def main() -> None:
     } for row in rows])
     print("\n" + df.drop(columns=["ref_ms"]).to_string(
         index=False, float_format=lambda f: f"{f:.3f}"))
-    stem = "matrix-multiplication-intensity" + ("-fp8"
-                                                           if args.fp8 else "")
+    stem = "matrix-multiplication-intensity" + ("-fp8" if args.fp8 else "")
     csv_path = os.path.join(args.save_path, stem + ".csv")
     df.to_csv(csv_path, index=False)
     print(f"Saved data to {csv_path}")

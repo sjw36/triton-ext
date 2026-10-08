@@ -771,9 +771,7 @@ private:
 ////////////////////////////////////////////////////////////////////////////////
 // Pass Intensity
 ////////////////////////////////////////////////////////////////////////////////
-struct IntensityPass
-    : public triton::impl::TritonIntensityBase<
-          IntensityPass> {
+struct IntensityPass : public triton::impl::TritonIntensityBase<IntensityPass> {
   using TritonIntensityBase::TritonIntensityBase;
 
   // TODO: get callgraph (see Analysis/Allocation.h)

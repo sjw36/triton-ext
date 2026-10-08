@@ -39,8 +39,7 @@ libtriton.passes.plugin.extend_with(str(PLUGIN_LIBRARY))  # adds passes
 from . import custom_stages, utilities  # noqa: E402
 from .intensity import (  # noqa: E402
     LOAD_BYTES, METADATA_KEY, OP_COUNT, STORE_BYTES, Intensity,
-    IntensityEquations, IntensityListener,
-    intensity, enable,
+    IntensityEquations, IntensityListener, intensity, enable,
 )
 from .utilities import (  # noqa: E402
     DEFAULT_TITLE, RESOURCE_ERRORS, AutotuneRecorder, ConfigLaunch,

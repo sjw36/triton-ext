@@ -19,8 +19,7 @@ from __future__ import annotations
 import sys
 from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple
 
-from ..intensity import (LOAD_BYTES, OP_COUNT, STORE_BYTES,
-                         IntensityEquations)
+from ..intensity import (LOAD_BYTES, OP_COUNT, STORE_BYTES, IntensityEquations)
 from .launches import KernelLaunch
 
 __all__ = [
@@ -73,8 +72,7 @@ def format_equations(equations: IntensityEquations,
     return "\n".join(lines)
 
 
-def _as_equations(
-        item: Any) -> Tuple[IntensityEquations, tuple, dict]:
+def _as_equations(item: Any) -> Tuple[IntensityEquations, tuple, dict]:
     """``(equations, launch args, launch kwargs)`` of a printable item."""
     if isinstance(item, KernelLaunch):
         return item.equations(), tuple(item.args), dict(item.kwargs)
@@ -99,8 +97,7 @@ def print_equations(items: Any,
     """
     if isinstance(
             items,
-        (KernelLaunch,
-         IntensityEquations)) or not isinstance(items, Iterable):
+        (KernelLaunch, IntensityEquations)) or not isinstance(items, Iterable):
         items = [items]
     last: Dict[str, Tuple[IntensityEquations, tuple, dict]] = {}
     for item in items:

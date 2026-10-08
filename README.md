@@ -136,7 +136,6 @@ import triton-<extension>
 ...
 ```
 
-[intensity]: ./pass/Intensity/
 [build_llvm]: https://github.com/triton-lang/triton/blob/main/scripts/build-llvm-project.sh
 [download_llvm]: ./ci/download_llvm.py
 [download_triton]: ./ci/download_triton_wheel.py

@@ -123,14 +123,7 @@ def test_intensity_listener_gathers_per_kernel(monkeypatch) -> None:
         assert equations.store_bytes(2) == str(block * 4)
         assert equations.op_count(2) == str(2 * block)
 
-        work = tint.intensity(compiled,
-                                        grid,
-                                        x,
-                                        y,
-                                        out,
-                                        n,
-                                        2.0,
-                                        BLOCK=block)
+        work = tint.intensity(compiled, grid, x, y, out, n, 2.0, BLOCK=block)
         assert work.grid == (n // block, 1, 1)
         assert work.bytes == 3 * n * 4
         assert work.load_bytes == 2 * n * 4
@@ -243,7 +236,8 @@ def test_intensity_utilities_record_and_report(capsys) -> None:
     assert total.per_kernel["k"].flops == total.flops
 
     # Equations rendered with `args[i]` resolved to parameter names.
-    text = tint.format_equations(first.equations(), *first.args, **first.kwargs)
+    text = tint.format_equations(first.equations(), *first.args,
+                                 **first.kwargs)
     assert text.splitlines() == [
         "k [BLOCK=128]",
         "    x  load_bytes: args[1] * 4",
@@ -307,13 +301,13 @@ def test_intensity_compile_with_config(monkeypatch) -> None:
         assert torch.allclose(out, 2.0 * x)
     with pytest.raises(ValueError, match="Conflicting"):
         tint.compile_with_config(_scale,
-                                configs[0],
-                                grid,
-                                x,
-                                out,
-                                n,
-                                2.0,
-                                BLOCK=64)
+                                 configs[0],
+                                 grid,
+                                 x,
+                                 out,
+                                 n,
+                                 2.0,
+                                 BLOCK=64)
 
     # `launch` records the autotuner's pick, `record` gathers it.
     tint.last_launches.clear()
@@ -326,14 +320,14 @@ def test_intensity_compile_with_config(monkeypatch) -> None:
 
     # Kernel parameters may also be given by keyword (as a hook sees them).
     by_name = tint.compile_with_config(_scale,
-                                      configs[0],
-                                      grid,
-                                      x_ptr=x,
-                                      out_ptr=out,
-                                      n=n,
-                                      alpha=2.0)
+                                       configs[0],
+                                       grid,
+                                       x_ptr=x,
+                                       out_ptr=out,
+                                       n=n,
+                                       alpha=2.0)
     assert by_name.work() == tint.compile_with_config(_scale, configs[0], grid,
-                                                     x, out, n, 2.0).work()
+                                                      x, out, n, 2.0).work()
     out.zero_()
     by_name.run()
     torch.cuda.synchronize()
